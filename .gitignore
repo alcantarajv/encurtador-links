@@ -1,0 +1,37 @@
+# Build / Maven
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDEs
+.idea/
+*.iws
+*.iml
+*.ipr
+.vscode/
+.classpath
+.project
+.settings/
+bin/
+nbproject/
+.apt_generated/
+.factorypath
+
+# Logs
+*.log
+logs/
+
+# Variáveis de ambiente e segredos
+.env
+.env.local
+*.pem
+application-local.properties
+application-local.yml
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+desktop.ini
