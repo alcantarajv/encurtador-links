@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Encurtador de Links</title>
+<meta name="description" content="API REST de encurtamento de links com cache, rate limiting e estatisticas de acesso.">
+<!--
+  Pagina unica, sem framework e sem etapa de build: e um arquivo estatico que o
+  Spring serve sozinho a partir de src/main/resources/static.
+
+  Ela existe porque a raiz da aplicacao devolvia 404 -- correto para uma API,
+  ruim para quem abre o link do portfolio sem ler o README. O que interessa
+  neste projeto e o backend; esta pagina so precisa deixar isso demonstravel sem
+  abrir um terminal.
+-->
+<style>
+  :root {
+    color-scheme: light dark;
+    --fundo: #fbfbfd;
+    --superficie: #ffffff;
+    --borda: #e3e3e8;
+    --texto: #1a1a1f;
+    --suave: #6b6b76;
+    --acento: #2f6f4e;
+    --acento-texto: #ffffff;
+    --erro: #a3312a;
+    --codigo-fundo: #f2f2f5;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fundo: #131317;
+      --superficie: #1b1b21;
+      --borda: #2e2e37;
+      --texto: #ececf1;
+      --suave: #9a9aa6;
+      --acento: #6bbf8f;
+      --acento-texto: #10241a;
+      --erro: #f0857d;
+      --codigo-fundo: #232329;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 2.5rem 1.25rem 4rem;
+    background: var(--fundo);
+    color: var(--texto);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    justify-content: center;
+  }
+
+  main { width: 100%; max-width: 44rem; }
+
+  h1 { font-size: 1.6rem; margin: 0 0 .35rem; letter-spacing: -.01em; }
+
+  .subtitulo { color: var(--suave); margin: 0 0 .5rem; }
+
+  .pilha { color: var(--suave); font-size: .85rem; margin: 0 0 2.25rem; }
+
+  form { display: flex; gap: .5rem; flex-wrap: wrap; }
+
+  input[type=url] {
+    flex: 1 1 18rem;
+    padding: .7rem .85rem;
+    font: inherit;
+    color: var(--texto);
+    background: var(--superficie);
+    border: 1px solid var(--borda);
+    border-radius: .5rem;
+  }
+
+  input[type=url]:focus-visible,
+  button:focus-visible { outline: 2px solid var(--acento); outline-offset: 2px; }
+
+  button {
+    padding: .7rem 1.3rem;
+    font: inherit;
+    font-weight: 600;
+    color: var(--acento-texto);
+    background: var(--acento);
+    border: 0;
+    border-radius: .5rem;
+    cursor: pointer;
+  }
+
+  button:disabled { opacity: .55; cursor: progress; }
+
+  #resultado { margin-top: 1.25rem; }
+
+  #resultado:empty { display: none; }
+
+  .cartao {
+    background: var(--superficie);
+    border: 1px solid var(--borda);
+    border-radius: .6rem;
+    padding: 1rem 1.15rem;
+  }
+
+  .cartao a { color: var(--acento); font-weight: 600; word-break: break-all; }
+
+  .cartao .destino,
+  .cartao .aviso { color: var(--suave); font-size: .85rem; margin: .5rem 0 0; }
+
+  .cartao.falhou { border-color: var(--erro); }
+
+  .cartao.falhou strong { color: var(--erro); }
+
+  h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em;
+       color: var(--suave); margin: 3rem 0 .85rem; }
+
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+
+  td { padding: .5rem .6rem .5rem 0; border-bottom: 1px solid var(--borda);
+       vertical-align: top; }
+
+  tr:last-child td { border-bottom: 0; }
+
+  td:first-child { white-space: nowrap; }
+
+  code { background: var(--codigo-fundo); padding: .12rem .38rem;
+         border-radius: .3rem; font-size: .85em; }
+
+  footer { margin-top: 3rem; font-size: .9rem; color: var(--suave); }
+
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Encurtador de Links</h1>
+  <p class="subtitulo">API REST de encurtamento com redirecionamento em cache, controle de abuso por IP e estatísticas de acesso.</p>
+  <p class="pilha">Java 21 · Spring Boot 4 · PostgreSQL · Redis · Docker</p>
+
+  <form id="form">
+    <label for="url" hidden>URL para encurtar</label>
+    <input id="url" name="url" type="url" required
+           placeholder="https://exemplo.com/uma-url-bem-comprida"
+           autocomplete="off" spellcheck="false">
+    <button id="botao" type="submit">Encurtar</button>
+  </form>
+
+  <!-- aria-live faz o leitor de tela anunciar o resultado, que aparece sem
+       recarregar a pagina. -->
+  <div id="resultado" aria-live="polite"></div>
+
+  <h2>Endpoints</h2>
+  <table>
+    <tbody>
+      <tr>
+        <td><code>POST /api/v1/links</code></td>
+        <td>Cria um link curto. Corpo: <code>{"originalUrl": "..."}</code>, com <code>expiresAt</code> opcional.</td>
+      </tr>
+      <tr>
+        <td><code>GET /{código}</code></td>
+        <td>Redireciona (302) para a URL original e registra o acesso em segundo plano.</td>
+      </tr>
+      <tr>
+        <td><code>GET /api/v1/links/{código}/stats</code></td>
+        <td>Total de cliques, visitantes distintos, série diária e principais origens.</td>
+      </tr>
+      <tr>
+        <td><code>GET /actuator/health</code></td>
+        <td>Estado da aplicação.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <footer>
+    <p>Código-fonte, decisões de arquitetura e instruções de execução no
+       <a href="https://github.com/alcantarajv/encurtador-links">repositório no GitHub</a>.</p>
+  </footer>
+</main>
+
+<script>
+  const form = document.getElementById('form');
+  const campo = document.getElementById('url');
+  const botao = document.getElementById('botao');
+  const saida = document.getElementById('resultado');
+
+  // Escapa antes de interpolar: a URL vem do usuario, e ela reaparece na tela.
+  const escapa = (texto) => texto.replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[c]);
+
+  function erro(mensagem) {
+    saida.innerHTML = '<div class="cartao falhou"><strong>' + escapa(mensagem) + '</strong></div>';
+  }
+
+  form.addEventListener('submit', async (evento) => {
+    evento.preventDefault();
+    botao.disabled = true;
+    saida.innerHTML = '';
+
+    try {
+      const resposta = await fetch('/api/v1/links', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ originalUrl: campo.value })
+      });
+
+      // O rate limiting de criacao e de 10 por minuto por IP. Vale explicar,
+      // e nao so mostrar o numero cru do status.
+      if (resposta.status === 429) {
+        const segundos = resposta.headers.get('Retry-After');
+        erro('Limite de criação atingido (10 por minuto)' +
+             (segundos ? '. Tente de novo em ' + segundos + 's.' : '.'));
+        return;
+      }
+
+      // Erros de validacao vem no formato Problem Details (RFC 9457). O campo
+      // "detail" e generico ("um ou mais campos estao invalidos"); a mensagem
+      // util esta em "errors", por campo -- e e ela que ajuda quem digitou.
+      if (!resposta.ok) {
+        const problema = await resposta.json().catch(() => null);
+        const porCampo = Object.values(problema?.errors ?? {}).flat();
+        erro(porCampo[0] || problema?.detail || problema?.title ||
+             'Não foi possível encurtar essa URL.');
+        return;
+      }
+
+      const link = await resposta.json();
+      const curta = escapa(link.shortUrl);
+
+      saida.innerHTML =
+        '<div class="cartao">' +
+          '<a href="' + curta + '">' + curta + '</a>' +
+          '<p class="destino">aponta para ' + escapa(link.originalUrl) + '</p>' +
+          '<p class="aviso"><a href="/api/v1/links/' + escapa(link.code) + '/stats">' +
+            'ver as estatísticas deste link</a> — os acessos aparecem lá em instantes,' +
+            ' porque o registro do clique acontece fora do caminho da resposta.</p>' +
+        '</div>';
+    } catch {
+      erro('Não foi possível falar com o servidor.');
+    } finally {
+      botao.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
