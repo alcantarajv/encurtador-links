@@ -24,8 +24,8 @@ Este projeto foi construído com foco nesses pontos, e não apenas no CRUD de li
 
 | Camada | Tecnologia |
 |---|---|
-| Linguagem | Java 21 |
-| Framework | Spring Boot 3 |
+| Linguagem | Java 21 (LTS) |
+| Framework | Spring Boot 4 |
 | Banco de dados | PostgreSQL |
 | Cache | Redis |
 | Build | Maven |
@@ -35,11 +35,54 @@ Este projeto foi construído com foco nesses pontos, e não apenas no CRUD de li
 
 ## Como executar localmente
 
-_Instruções serão adicionadas na etapa de containerização._
+**Pré-requisito:** JDK 21 instalado. O Maven não precisa ser instalado — o projeto usa o Maven Wrapper.
+
+```bash
+# Windows
+.\mvnw spring-boot:run
+
+# Linux / macOS
+./mvnw spring-boot:run
+```
+
+A aplicação sobe em `http://localhost:8080`.
+
+Para verificar se está no ar:
+
+```bash
+curl http://localhost:8080/actuator/health
+```
+
+Resposta esperada:
+
+```json
+{"status":"UP","groups":["liveness","readiness"]}
+```
+
+## Estrutura do projeto
+
+```
+encurtador-links/
+├── .mvn/wrapper/          # Maven Wrapper — garante a mesma versão do Maven para todos
+├── src/
+│   ├── main/
+│   │   ├── java/          # Código da aplicação
+│   │   └── resources/     # Configurações (application.properties)
+│   └── test/
+│       └── java/          # Testes automatizados
+├── mvnw / mvnw.cmd        # Scripts do Maven Wrapper (Linux/macOS e Windows)
+└── pom.xml                # Dependências e configuração de build
+```
 
 ## Decisões técnicas
 
-_Esta seção documenta as escolhas de arquitetura tomadas ao longo do desenvolvimento e será preenchida conforme o projeto avança._
+**Maven Wrapper em vez de Maven instalado.** Os arquivos `mvnw` e `.mvn/` ficam versionados no repositório e baixam automaticamente a versão correta do Maven. Qualquer pessoa que clone o projeto compila com exatamente a mesma versão, sem precisar instalar nada.
+
+**Actuator com exposição restrita.** Apenas os endpoints `/health` e `/info` são expostos. Expor `*` liberaria endpoints com informação sensível sobre o ambiente da aplicação.
+
+**Stack traces não retornam na resposta HTTP.** Uma stack trace em resposta de API expõe estrutura interna, versões de bibliotecas e caminhos de arquivo — informação útil para quem quer atacar o serviço.
+
+_Esta seção é atualizada conforme novas decisões são tomadas._
 
 ## Autor
 
