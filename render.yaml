@@ -54,7 +54,9 @@ services:
 
       # "sync: false" faz o Render perguntar o valor na criacao, em vez de
       # deixa-lo escrito neste arquivo. O endereco e previsivel a partir do nome
-      # do servico: https://encurtador-links.onrender.com
+      # do servico -- o Render acrescenta um sufixo quando o nome ja existe, entao
+      # confira o endereco atribuido antes de responder (aqui saiu
+      # https://encurtador-links-rudi.onrender.com).
       - key: SHORTENER_BASE_URL
         sync: false
 

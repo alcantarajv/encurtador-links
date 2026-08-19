@@ -4,7 +4,7 @@
 
 API REST para encurtamento de links com redirecionamento de baixa latência, controle de abuso e coleta de métricas de acesso.
 
-**▶ No ar em [encurtador-links.onrender.com](https://encurtador-links.onrender.com)**
+**▶ No ar em [encurtador-links-rudi.onrender.com](https://encurtador-links-rudi.onrender.com)**
 
 > O serviço roda em plano gratuito e hiberna após 15 minutos sem tráfego. O primeiro acesso depois disso leva cerca de um minuto para responder — os seguintes são imediatos.
 
