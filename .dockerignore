@@ -1,0 +1,40 @@
+# Tudo que estiver aqui nao e enviado ao daemon do Docker quando a imagem e
+# construida. Sem isto, o "docker build" empacota a pasta inteira -- inclusive o
+# target/ com um jar de 66 MB e o .git com o historico todo -- e manda pro
+# daemon so pra jogar fora depois.
+#
+# Vale tambem como protecao: arquivo que nao entra no contexto nao tem como
+# acabar dentro da imagem por descuido (o caso do .env).
+
+# Resultado de build local. A imagem compila do zero, no proprio Dockerfile.
+target/
+build/
+
+# Historico do Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+
+# Segredos e configuracao de maquina
+.env
+.env.local
+*.pem
+application-local.properties
+
+# Documentacao e arquivos que nao influenciam o build
+README.md
+CLAUDE.md
+docker-compose.yml
+*.log
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+desktop.ini
