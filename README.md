@@ -18,9 +18,10 @@ Este projeto foi construído com foco nesses pontos, e não apenas no CRUD de li
 - [x] Redirecionamento HTTP com cache em memória distribuída (Redis)
 - [x] Expiração opcional de links
 - [x] Rate limiting por IP, com políticas distintas para criação e redirecionamento
-- [ ] Registro assíncrono de cliques (data/hora, referrer, user agent, país)
-- [ ] Endpoint de estatísticas agregadas por link
+- [x] Registro assíncrono de cliques (data/hora, referrer, user agent, hash do IP)
+- [x] Endpoint de estatísticas agregadas por link
 - [ ] Documentação interativa da API via OpenAPI/Swagger
+- [ ] País de origem do clique _(exige base GeoIP — ver "Fora de escopo" abaixo)_
 
 ## Stack
 
@@ -176,14 +177,62 @@ Se o código não existir **ou o link já tiver expirado**, a resposta é `404`,
 O caminho aceita apenas de 4 a 16 caracteres alfanuméricos. Qualquer outra coisa (`/favicon.ico`, `/robots.txt`) devolve 404 sem chegar a consultar o cache ou o banco.
 
 
+
+### `GET /api/v1/links/{code}/stats` — estatísticas do link
+
+```bash
+curl http://localhost:8080/api/v1/links/J0ghmbq/stats
+```
+
+```json
+{
+  "code": "J0ghmbq",
+  "shortUrl": "http://localhost:8080/J0ghmbq",
+  "originalUrl": "https://spring.io/guides",
+  "createdAt": "2026-08-19T12:54:45.383754Z",
+  "expiresAt": null,
+  "totalClicks": 8,
+  "uniqueVisitors": 3,
+  "lastClickAt": "2026-08-19T12:54:45.902021Z",
+  "clicksByDay": [
+    { "day": "2026-08-19", "clicks": 8 }
+  ],
+  "topReferrers": [
+    { "referrer": "https://google.com", "clicks": 4 },
+    { "referrer": "https://twitter.com", "clicks": 2 },
+    { "referrer": "https://news.ycombinator.com", "clicks": 1 }
+  ]
+}
+```
+
+| Campo | Observação |
+|---|---|
+| `uniqueVisitors` | visitantes distintos, contados pelo hash do IP — o IP em si nunca é armazenado |
+| `clicksByDay` | últimos 7 dias, do mais antigo ao mais recente; dias sem acesso não aparecem |
+| `topReferrers` | 5 origens mais frequentes; acessos sem `Referer` ficam de fora |
+
+Um link expirado continua tendo estatísticas: ele parou de redirecionar, mas o histórico de quem clicou nele não deixou de existir. Código inexistente devolve `404`.
+
+### Privacidade dos dados de acesso
+
+O endereço IP **não é gravado**. O que vai para o banco é o SHA-256 do IP combinado com um segredo da aplicação (`CLICK_IP_SALT`).
+
+IP é dado pessoal — a LGPD o trata como tal quando permite identificar alguém em combinação com outras informações. O hash entrega a única coisa de que a estatística precisa (saber se dois acessos vieram do mesmo lugar) sem manter o dado original, e um vazamento do banco não expõe quem clicou.
+
+O sal é essencial: sem ele, o hash de um IP seria idêntico em qualquer instalação do mundo, e bastaria pré-calcular o SHA-256 dos 4 bilhões de IPv4 para reverter a coluna inteira. Trocar o sal reinicia a contagem de visitantes distintos, porque os hashes antigos deixam de casar com os novos.
+
+### Fora de escopo por ora: país de origem
+
+O país do visitante exigiria uma base GeoIP (a GeoLite2 da MaxMind é a usual), que precisa de conta, chave de licença e atualização periódica de um arquivo binário de dezenas de megabytes. É uma dependência de peso desproporcional ao restante do projeto, então ficou de fora — e não silenciosamente: está na lista de funcionalidades como pendente.
 ### Rate limiting
 
-Ambos os endpoints são limitados por IP, com políticas separadas:
+Os endpoints são limitados por IP, com políticas separadas:
 
 | Endpoint | Limite padrão | Por quê |
 |---|---|---|
 | `POST /api/v1/links` | 10 / minuto | criar link grava no banco e consome espaço de códigos; ninguém cria dez links por minuto na mão |
 | `GET /{code}` | 120 / minuto | é o uso normal do serviço — um limite apertado quebraria o produto em vez de protegê-lo |
+| `GET /api/v1/links/{code}/stats` | 30 / minuto | roda consultas de agregação e não passa por cache |
 
 Toda resposta traz o saldo da janela:
 
@@ -219,6 +268,9 @@ O `/actuator/**` fica de fora do limitador de propósito: o health check é cham
 | `shortener.rate-limit.enabled` | `RATE_LIMIT_ENABLED` | `true` | liga/desliga o limitador |
 | `shortener.rate-limit.creation.limit` | `RATE_LIMIT_CREATION` | `10` | criações de link por minuto, por IP |
 | `shortener.rate-limit.redirect.limit` | `RATE_LIMIT_REDIRECT` | `120` | redirecionamentos por minuto, por IP |
+| `shortener.rate-limit.stats.limit` | `RATE_LIMIT_STATS` | `30` | consultas de estatística por minuto, por IP |
+| `shortener.click-tracking.enabled` | `CLICK_TRACKING_ENABLED` | `true` | liga/desliga o registro de cliques |
+| `shortener.click-tracking.ip-salt` | `CLICK_IP_SALT` | valor de desenvolvimento | segredo usado no hash do IP — **trocar em produção** |
 
 Os valores padrão existem para desenvolvimento local e batem com o que o `docker-compose.yml` cria. Em produção todos vêm do ambiente — nenhuma credencial fica em arquivo versionado.
 
@@ -312,6 +364,24 @@ encurtador-links/
 
 **Nota para o deploy:** com o Redis fora do ar, `/actuator/health` responde `503` — o que é correto, o sistema está degradado. Mas `/actuator/health/readiness` e `/actuator/health/liveness` continuam `200`, porque a aplicação segue servindo pelo PostgreSQL. As sondas da plataforma devem apontar para esses dois, e não para o endpoint agregado, sob pena de o container ser reiniciado enquanto atende normalmente.
 
+
+**Registro de clique fora da thread da requisição.** Gravar o acesso é trabalho do serviço, não do visitante: se o `INSERT` acontecesse antes da resposta, cada redirecionamento pagaria uma escrita no banco. O `@Async` com pool dedicado devolve o `302` imediatamente e grava depois.
+
+**Os dados do clique são copiados da requisição *antes* de ir para a outra thread.** Assim que a resposta é enviada, o Tomcat devolve o `HttpServletRequest` ao pool e o reaproveita. Ler um cabeçalho na thread de gravação leria dado de **outro visitante**, ou estouraria. Por isso existe o record `ClickEvent`: ele é o que atravessa a fronteira entre as threads.
+
+**Fila limitada e `DiscardPolicy`.** A fila padrão do executor é ilimitada — parece generosa, mas num pico ela cresce até a aplicação ficar sem memória. Com fila de 500 e descarte, a troca fica explícita: sob pico extremo perde-se estatística para não perder o redirecionamento. As alternativas são piores: `CallerRunsPolicy` faria a thread da requisição executar a gravação (exatamente o que o pool existe para evitar, e no pior momento possível) e `AbortPolicy` lançaria exceção dentro do fluxo do redirecionamento.
+
+**O IP vira hash antes de ser gravado.** Ver a seção *Privacidade dos dados de acesso*.
+
+**`getReferenceById` em vez de `findById` ao gravar o clique.** O `getReferenceById` devolve um proxy preguiçoso: o Hibernate não faz `SELECT` na tabela `links`, só usa o id para preencher a chave estrangeira. Com `findById` seriam duas idas ao banco por clique em vez de uma — e o dado carregado seria descartado em seguida.
+
+**Agregação em SQL, não em Java.** Os métodos de leitura do `ClickRepository` devolvem números já agregados. Contar mil cliques em SQL custa uma consulta; trazer os mil registros para a memória e contar em Java custa mil linhas atravessando a rede.
+
+**O `resolve` não é transacional — e isso foi uma correção, não um esquecimento.** Até esta etapa o método tinha `@Transactional(readOnly = true)`, o que parecia inofensivo. Não era: a transação abre **antes** de o cache ser consultado, então toda resposta — inclusive as que o Redis já tinha — pegava uma conexão do PostgreSQL. Com o banco fora do ar, o redirecionamento de um link cacheado respondia `500` depois de esperar o tempo limite de conexão, sem nunca ter precisado do banco. Sem a anotação, o acerto de cache não encosta no PostgreSQL.
+
+**Timeout de conexão do HikariCP reduzido para 3 segundos.** O padrão é 30. Com o banco fora do ar, cada requisição que dependa dele segura uma thread do Tomcat por meio minuto — em poucos segundos de tráfego o servidor fica sem threads e para de responder até o que não depende do banco. Mesma lógica já aplicada ao Redis: falhar rápido é melhor do que travar.
+
+**`AsyncUncaughtExceptionHandler` em vez de `try/catch` dentro do método.** Um método `@Async void` não tem quem o espere: se lançar, ninguém recebe a exceção. A primeira versão tinha um `try/catch` no corpo do método, e ele dava falsa segurança — quando o banco está fora do ar, a falha acontece ao **abrir a transação**, no proxy que envolve o método, e o `try/catch` interno nunca é alcançado. O tratador global fica por fora de tudo e registra a falha com o evento completo.
 ## Autor
 
 **João Vitor Alcântara Corrêa**
