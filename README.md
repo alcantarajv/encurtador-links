@@ -17,7 +17,7 @@ Este projeto foi construído com foco nesses pontos, e não apenas no CRUD de li
 - [x] Persistência em PostgreSQL com migrations versionadas (Flyway)
 - [x] Redirecionamento HTTP com cache em memória distribuída (Redis)
 - [x] Expiração opcional de links
-- [ ] Rate limiting por IP para prevenir abuso na criação de links
+- [x] Rate limiting por IP, com políticas distintas para criação e redirecionamento
 - [ ] Registro assíncrono de cliques (data/hora, referrer, user agent, país)
 - [ ] Endpoint de estatísticas agregadas por link
 - [ ] Documentação interativa da API via OpenAPI/Swagger
@@ -175,6 +175,37 @@ Se o código não existir **ou o link já tiver expirado**, a resposta é `404`,
 
 O caminho aceita apenas de 4 a 16 caracteres alfanuméricos. Qualquer outra coisa (`/favicon.ico`, `/robots.txt`) devolve 404 sem chegar a consultar o cache ou o banco.
 
+
+### Rate limiting
+
+Ambos os endpoints são limitados por IP, com políticas separadas:
+
+| Endpoint | Limite padrão | Por quê |
+|---|---|---|
+| `POST /api/v1/links` | 10 / minuto | criar link grava no banco e consome espaço de códigos; ninguém cria dez links por minuto na mão |
+| `GET /{code}` | 120 / minuto | é o uso normal do serviço — um limite apertado quebraria o produto em vez de protegê-lo |
+
+Toda resposta traz o saldo da janela:
+
+```
+X-RateLimit-Limit: 10
+X-RateLimit-Remaining: 7
+```
+
+Ao estourar, a resposta é `429` com `Retry-After` (em segundos):
+
+```json
+{
+  "type": "about:blank",
+  "title": "Muitas requisicoes",
+  "status": 429,
+  "detail": "limite de requisicoes excedido; tente novamente em 45s",
+  "instance": "/api/v1/links",
+  "retryAfterSeconds": 45
+}
+```
+
+O `/actuator/**` fica de fora do limitador de propósito: o health check é chamado pela plataforma de hospedagem a cada poucos segundos, sempre do mesmo IP — seria o primeiro a levar 429, e o serviço seria declarado morto pelo próprio limitador.
 ## Configuração
 
 | Propriedade | Variável de ambiente | Padrão | Para que serve |
@@ -185,6 +216,9 @@ O caminho aceita apenas de 4 a 16 caracteres alfanuméricos. Qualquer outra cois
 | `spring.datasource.password` | `DB_PASSWORD` | `encurtador` | senha do banco |
 | `spring.data.redis.host` | `REDIS_HOST` | `localhost` | endereço do Redis |
 | `spring.data.redis.port` | `REDIS_PORT` | `6379` | porta do Redis |
+| `shortener.rate-limit.enabled` | `RATE_LIMIT_ENABLED` | `true` | liga/desliga o limitador |
+| `shortener.rate-limit.creation.limit` | `RATE_LIMIT_CREATION` | `10` | criações de link por minuto, por IP |
+| `shortener.rate-limit.redirect.limit` | `RATE_LIMIT_REDIRECT` | `120` | redirecionamentos por minuto, por IP |
 
 Os valores padrão existem para desenvolvimento local e batem com o que o `docker-compose.yml` cria. Em produção todos vêm do ambiente — nenhuma credencial fica em arquivo versionado.
 
@@ -195,11 +229,12 @@ encurtador-links/
 ├── .mvn/wrapper/                    # Maven Wrapper — garante a mesma versão do Maven para todos
 ├── src/
 │   ├── main/java/.../encurtador/
-│   │   ├── config/                  # Beans de configuração (Clock, propriedades)
+│   │   ├── config/                  # Beans de configuração (Clock, cache, propriedades)
 │   │   ├── controller/              # Porta HTTP: recebe e devolve JSON
 │   │   ├── domain/                  # Modelo e regras do domínio
 │   │   ├── dto/                     # Contratos de entrada e saída da API
 │   │   ├── exception/               # Exceções de negócio e tratador global
+│   │   ├── ratelimit/               # Limitador por IP e interceptor HTTP
 │   │   ├── repository/              # Contrato de armazenamento e implementações
 │   │   └── service/                 # Regra de negócio
 │   ├── main/resources/
@@ -259,6 +294,23 @@ encurtador-links/
 **Timeout curto no Redis.** O padrão é esperar indefinidamente. Se o Redis travar, o redirecionamento — o caminho mais quente da aplicação — trava junto. Dois segundos e falha.
 
 **O mapeamento `/{code}` tem expressão regular.** Sem ela, `/{code}` capturaria qualquer caminho de um segmento: `/favicon.ico`, `/robots.txt`, tudo viraria consulta ao cache e ao banco.
+
+
+**Contador de rate limit no Redis, não em memória.** Um contador local funciona enquanto existe uma única instância da aplicação. Com duas instâncias atrás de um balanceador, cada uma contaria metade das requisições e o limite real viraria o dobro do configurado. O Redis é onde as instâncias combinam a contagem.
+
+**Janela fixa, com a limitação assumida.** A primeira requisição de um IP cria a chave com prazo de validade igual à janela; as seguintes só incrementam. O ponto fraco é a virada: com limite de 10 por minuto, dá para fazer 10 no fim de uma janela e 10 no começo da seguinte — 20 em poucos segundos. Janela deslizante e token bucket resolvem isso ao custo de bastante complexidade; para conter abuso grosseiro, a janela fixa entrega o necessário.
+
+**`INCR` e `PEXPIRE` num script Lua.** Em dois comandos separados existiria uma janela em que o `INCR` acontece e o `PEXPIRE` não — por queda da aplicação no meio. A chave ficaria sem prazo de validade e aquele IP seria bloqueado **para sempre**. O Redis executa scripts Lua atomicamente.
+
+**Falha aberta quando o Redis cai.** Sem Redis não dá para saber quantas requisições o IP já fez. São duas escolhas ruins: bloquear todo mundo (o serviço cai junto com o Redis) ou deixar passar (fica sem proteção até o Redis voltar). Para um encurtador, ficar no ar vale mais — o limite é proteção contra abuso, não barreira de segurança. Num fluxo de login ou pagamento a escolha seria a oposta. Pelo mesmo motivo, o cache tem um `CacheErrorHandler` que engole erros do Redis e deixa a chamada seguir para o banco: as duas decisões precisam concordar, senão o limitador liberaria a requisição e o cache a derrubaria logo em seguida.
+
+**O custo dessa escolha:** com o Redis fora do ar, cada requisição paga o timeout de 2 segundos antes de desistir. O serviço continua correto, mas fica lento. Quem resolve isso de verdade é um circuit breaker — que, depois de N falhas, para de tentar por um tempo em vez de esperar o timeout toda vez.
+
+**O IP vem do `getRemoteAddr()`, não de ler `X-Forwarded-For` na mão.** Atrás de um proxy, `getRemoteAddr()` devolveria o IP do proxy e todos os visitantes cairiam no mesmo contador. Mas ler o cabeçalho diretamente é pior: ele é escrito pelo cliente, e qualquer um poderia forjar um IP diferente a cada requisição para escapar do limite. A configuração `server.forward-headers-strategy=framework` faz o Spring tratar isso num filtro próprio, antes da requisição chegar à aplicação. Isso vale **enquanto a aplicação só for alcançável através do proxy** — exposta direto na internet, o cabeçalho volta a ser forjável.
+
+**Health check fora do limitador.** O `/actuator/**` não é interceptado: a plataforma de hospedagem chama o health check a cada poucos segundos, sempre do mesmo IP. Seria o primeiro a levar 429, e o serviço seria declarado morto pelo próprio limitador.
+
+**Nota para o deploy:** com o Redis fora do ar, `/actuator/health` responde `503` — o que é correto, o sistema está degradado. Mas `/actuator/health/readiness` e `/actuator/health/liveness` continuam `200`, porque a aplicação segue servindo pelo PostgreSQL. As sondas da plataforma devem apontar para esses dois, e não para o endpoint agregado, sob pena de o container ser reiniciado enquanto atende normalmente.
 
 ## Autor
 
