@@ -1,7 +1,12 @@
 package com.joaoalcantara.encurtador.controller;
 
+import com.joaoalcantara.encurtador.domain.ClickEvent;
+import com.joaoalcantara.encurtador.domain.LinkTarget;
+import com.joaoalcantara.encurtador.service.ClickRecorder;
 import com.joaoalcantara.encurtador.service.LinkService;
+import jakarta.servlet.http.HttpServletRequest;
 import java.net.URI;
+import java.time.Clock;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -20,9 +25,13 @@ import org.springframework.web.bind.annotation.RestController;
 public class RedirectController {
 
     private final LinkService linkService;
+    private final ClickRecorder clickRecorder;
+    private final Clock clock;
 
-    public RedirectController(LinkService linkService) {
+    public RedirectController(LinkService linkService, ClickRecorder clickRecorder, Clock clock) {
         this.linkService = linkService;
+        this.clickRecorder = clickRecorder;
+        this.clock = clock;
     }
 
     /**
@@ -35,20 +44,44 @@ public class RedirectController {
      *
      * O 301 (permanente) e mais rapido: o navegador memoriza o destino e nas
      * proximas vezes nem chega a chamar o servico. E exatamente por isso ele nao
-     * serve aqui -- se o navegador nao chama, nao ha o que contar, e a Etapa 6 e
-     * justamente registro de cliques. O 301 tambem e dificil de desfazer: um
-     * link publicado com destino errado fica cacheado no navegador de quem
-     * clicou, fora do alcance do servidor.
+     * serve aqui -- se o navegador nao chama, nao ha clique para contar. O 301
+     * tambem e dificil de desfazer: um link publicado com destino errado fica
+     * cacheado no navegador de quem clicou, fora do alcance do servidor.
      *
      * O Cache-Control reforca a mesma intencao para proxies no meio do caminho.
      */
     @GetMapping("/{code:[A-Za-z0-9]{4,16}}")
-    public ResponseEntity<Void> redirect(@PathVariable String code) {
-        String originalUrl = linkService.resolve(code);
+    public ResponseEntity<Void> redirect(@PathVariable String code, HttpServletRequest request) {
+        LinkTarget target = linkService.resolve(code);
+
+        clickRecorder.record(clickEventOf(code, target, request));
 
         return ResponseEntity.status(HttpStatus.FOUND)
-                .location(URI.create(originalUrl))
+                .location(URI.create(target.originalUrl()))
                 .header(HttpHeaders.CACHE_CONTROL, "no-store")
                 .build();
+    }
+
+    /**
+     * Copia da requisicao tudo o que a gravacao vai precisar.
+     *
+     * Isto acontece AQUI, na thread da requisicao, e nao la dentro do
+     * ClickRecorder. O motivo e concreto: assim que a resposta e enviada, o
+     * Tomcat devolve o HttpServletRequest ao pool e o reaproveita em outra
+     * requisicao. Um acesso a request.getHeader(...) na thread de gravacao
+     * leria o cabecalho de OUTRO visitante, ou estouraria.
+     *
+     * Vale notar a grafia: o cabecalho HTTP e "Referer", com um R so -- erro de
+     * digitacao da especificacao original que ficou para sempre. O campo da API
+     * usa "referrer", correto.
+     */
+    private ClickEvent clickEventOf(String code, LinkTarget target, HttpServletRequest request) {
+        return new ClickEvent(
+                code,
+                target.id(),
+                clock.instant(),
+                request.getHeader(HttpHeaders.REFERER),
+                request.getHeader(HttpHeaders.USER_AGENT),
+                request.getRemoteAddr());
     }
 }

@@ -68,7 +68,7 @@ public class Link {
      * Projecao usada pelo redirecionamento e gravada no cache.
      */
     public LinkTarget toTarget() {
-        return new LinkTarget(originalUrl, expiresAt);
+        return new LinkTarget(id, originalUrl, expiresAt);
     }
 
     /**

@@ -37,5 +37,11 @@ public class WebConfig implements WebMvcConfigurer {
         registry.addInterceptor(new RateLimitInterceptor(
                         rateLimiter, properties.redirect(), "redirect", properties.enabled()))
                 .addPathPatterns("/{code:[A-Za-z0-9]{4,16}}");
+
+        // Estatistica roda consultas de agregacao e nao passa por cache. Teto
+        // proprio para que ninguem transforme o endpoint em ferramenta de carga.
+        registry.addInterceptor(new RateLimitInterceptor(
+                        rateLimiter, properties.stats(), "stats", properties.enabled()))
+                .addPathPatterns("/api/v1/links/*/stats");
     }
 }

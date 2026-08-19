@@ -15,9 +15,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param enabled  permite desligar o limite (util em teste e em ambiente local)
  * @param creation politica de POST /api/v1/links
  * @param redirect politica de GET /{code}
+ * @param stats    politica de GET /api/v1/links/{code}/stats -- consulta de
+ *                agregacao, mais cara que um redirecionamento e sem cache
  */
 @ConfigurationProperties(prefix = "shortener.rate-limit")
-public record RateLimitProperties(boolean enabled, Policy creation, Policy redirect) {
+public record RateLimitProperties(boolean enabled, Policy creation, Policy redirect, Policy stats) {
 
     /**
      * @param limit  quantas requisicoes sao permitidas dentro da janela

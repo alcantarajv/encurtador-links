@@ -11,19 +11,24 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.joaoalcantara.encurtador.config.RateLimitProperties;
+import com.joaoalcantara.encurtador.domain.LinkTarget;
 import com.joaoalcantara.encurtador.exception.LinkNotFoundException;
 import com.joaoalcantara.encurtador.ratelimit.RateLimiter;
+import com.joaoalcantara.encurtador.config.ClockConfig;
+import com.joaoalcantara.encurtador.service.ClickRecorder;
 import com.joaoalcantara.encurtador.service.LinkService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 @WebMvcTest(RedirectController.class)
+@Import(ClockConfig.class)
 @EnableConfigurationProperties(RateLimitProperties.class)
 @TestPropertySource(properties = "shortener.rate-limit.enabled=false")
 @DisplayName("GET /{code}")
@@ -38,10 +43,13 @@ class RedirectControllerTest {
     @MockitoBean
     private RateLimiter rateLimiter;
 
+    @MockitoBean
+    private ClickRecorder clickRecorder;
+
     @Test
     @DisplayName("redireciona com 302 para a URL de destino")
     void redirecionaComFound() throws Exception {
-        given(linkService.resolve("abc1234")).willReturn("https://exemplo.com/destino");
+        given(linkService.resolve("abc1234")).willReturn(new LinkTarget(1L, "https://exemplo.com/destino", null));
 
         mockMvc.perform(get("/abc1234"))
                 .andExpect(status().isFound())
@@ -56,7 +64,7 @@ class RedirectControllerTest {
     @Test
     @DisplayName("instrui o navegador a nao cachear o redirecionamento")
     void naoPermiteCacheDoRedirecionamento() throws Exception {
-        given(linkService.resolve(any())).willReturn("https://exemplo.com");
+        given(linkService.resolve(any())).willReturn(new LinkTarget(1L, "https://exemplo.com", null));
 
         mockMvc.perform(get("/abc1234"))
                 .andExpect(header().string("Cache-Control", "no-store"));

@@ -154,7 +154,7 @@ class LinkServiceTest {
         LinkService service = serviceWith(generatorReturning("abc1234"));
         service.create("https://exemplo.com/destino", null);
 
-        assertThat(service.resolve("abc1234")).isEqualTo("https://exemplo.com/destino");
+        assertThat(service.resolve("abc1234").originalUrl()).isEqualTo("https://exemplo.com/destino");
     }
 
     @Test
@@ -172,7 +172,7 @@ class LinkServiceTest {
         LinkService service = serviceWith(generatorReturning("abc1234"));
         service.create("https://exemplo.com", null);
 
-        assertThat(service.resolve("abc1234")).isEqualTo("https://exemplo.com");
+        assertThat(service.resolve("abc1234").originalUrl()).isEqualTo("https://exemplo.com");
     }
 
     @Test
@@ -181,7 +181,7 @@ class LinkServiceTest {
         LinkService service = serviceWith(generatorReturning("abc1234"));
         service.create("https://exemplo.com", NOW.plusSeconds(60));
 
-        assertThat(service.resolve("abc1234")).isEqualTo("https://exemplo.com");
+        assertThat(service.resolve("abc1234").originalUrl()).isEqualTo("https://exemplo.com");
     }
 
     /**

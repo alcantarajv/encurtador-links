@@ -11,7 +11,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.joaoalcantara.encurtador.config.RateLimitProperties;
 import com.joaoalcantara.encurtador.config.ShortenerProperties;
 import com.joaoalcantara.encurtador.domain.Link;
+import com.joaoalcantara.encurtador.domain.LinkTarget;
 import com.joaoalcantara.encurtador.ratelimit.InMemoryRateLimiter;
+import com.joaoalcantara.encurtador.config.ClockConfig;
+import com.joaoalcantara.encurtador.service.ClickRecorder;
 import com.joaoalcantara.encurtador.service.LinkService;
 import java.time.Instant;
 import org.junit.jupiter.api.BeforeEach;
@@ -37,7 +40,7 @@ import org.springframework.test.web.servlet.MockMvc;
  */
 @WebMvcTest({LinkController.class, RedirectController.class})
 @EnableConfigurationProperties({ShortenerProperties.class, RateLimitProperties.class})
-@Import(RateLimitWebTest.LimiterEmMemoria.class)
+@Import({RateLimitWebTest.LimiterEmMemoria.class, ClockConfig.class})
 @TestPropertySource(properties = {
         "shortener.base-url=http://localhost:8080",
         "shortener.rate-limit.enabled=true",
@@ -64,6 +67,9 @@ class RateLimitWebTest {
 
     @MockitoBean
     private LinkService linkService;
+
+    @MockitoBean
+    private ClickRecorder clickRecorder;
 
     @Autowired
     private InMemoryRateLimiter rateLimiter;
@@ -111,7 +117,7 @@ class RateLimitWebTest {
     @Test
     @DisplayName("responde 429 ao estourar o limite de redirecionamento")
     void bloqueiaRedirecionamentoAcimaDoLimite() throws Exception {
-        given(linkService.resolve(any())).willReturn("https://exemplo.com");
+        given(linkService.resolve(any())).willReturn(new LinkTarget(1L, "https://exemplo.com", null));
 
         for (int i = 0; i < 3; i++) {
             mockMvc.perform(get("/abc1234")).andExpect(status().isFound());
@@ -130,7 +136,7 @@ class RateLimitWebTest {
     void contadoresIndependentes() throws Exception {
         given(linkService.create(any(), any()))
                 .willReturn(new Link("abc1234", "https://exemplo.com", Instant.now(), null));
-        given(linkService.resolve(any())).willReturn("https://exemplo.com");
+        given(linkService.resolve(any())).willReturn(new LinkTarget(1L, "https://exemplo.com", null));
 
         criaLink();
         criaLink();
@@ -147,7 +153,7 @@ class RateLimitWebTest {
     @Test
     @DisplayName("informa o saldo restante nas respostas bem-sucedidas")
     void informaSaldoRestante() throws Exception {
-        given(linkService.resolve(any())).willReturn("https://exemplo.com");
+        given(linkService.resolve(any())).willReturn(new LinkTarget(1L, "https://exemplo.com", null));
 
         mockMvc.perform(get("/abc1234"))
                 .andExpect(header().string("X-RateLimit-Limit", "3"))
