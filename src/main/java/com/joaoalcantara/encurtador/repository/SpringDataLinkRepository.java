@@ -1,6 +1,7 @@
 package com.joaoalcantara.encurtador.repository;
 
 import com.joaoalcantara.encurtador.domain.Link;
+import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 /**
@@ -16,4 +17,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface SpringDataLinkRepository extends JpaRepository<Link, Long> {
 
     boolean existsByCode(String code);
+
+    Optional<Link> findByCode(String code);
 }

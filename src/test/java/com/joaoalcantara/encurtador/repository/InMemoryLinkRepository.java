@@ -2,6 +2,7 @@ package com.joaoalcantara.encurtador.repository;
 
 import com.joaoalcantara.encurtador.domain.Link;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -23,6 +24,11 @@ public class InMemoryLinkRepository implements LinkRepository {
     @Override
     public boolean existsByCode(String code) {
         return linksByCode.containsKey(code);
+    }
+
+    @Override
+    public Optional<Link> findByCode(String code) {
+        return Optional.ofNullable(linksByCode.get(code));
     }
 
     @Override

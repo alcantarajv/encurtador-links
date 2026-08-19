@@ -31,5 +31,24 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:8-alpine
+    container_name: encurtador-redis
+    ports:
+      - "6379:6379"
+    # --appendonly yes liga a persistencia em disco do Redis. Para um cache puro
+    # isso nao seria necessario -- se o Redis perder tudo, a aplicacao apenas
+    # volta a consultar o PostgreSQL. Fica ligado aqui so para o comportamento
+    # local ser previsivel entre reinicios.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
 volumes:
   postgres-data:
+  redis-data:

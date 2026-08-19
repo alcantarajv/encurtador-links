@@ -65,12 +65,21 @@ public class Link {
     }
 
     /**
+     * Projecao usada pelo redirecionamento e gravada no cache.
+     */
+    public LinkTarget toTarget() {
+        return new LinkTarget(originalUrl, expiresAt);
+    }
+
+    /**
      * Regra de negocio: um link sem data de expiracao vale para sempre.
-     * O instante e recebido como parametro em vez de usar Instant.now() aqui dentro
-     * para que o teste consiga controlar "que horas sao".
+     *
+     * O instante e recebido como parametro em vez de usar Instant.now() aqui
+     * dentro para que o teste consiga controlar "que horas sao". A regra em si
+     * mora no LinkTarget, que e quem o caminho de redirecionamento enxerga.
      */
     public boolean isExpired(Instant now) {
-        return expiresAt != null && !now.isBefore(expiresAt);
+        return toTarget().isExpired(now);
     }
 
     public Long getId() {

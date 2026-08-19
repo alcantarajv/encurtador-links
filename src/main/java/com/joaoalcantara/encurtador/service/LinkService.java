@@ -1,8 +1,10 @@
 package com.joaoalcantara.encurtador.service;
 
 import com.joaoalcantara.encurtador.domain.Link;
+import com.joaoalcantara.encurtador.domain.LinkTarget;
 import com.joaoalcantara.encurtador.exception.CodeGenerationException;
 import com.joaoalcantara.encurtador.exception.InvalidUrlException;
+import com.joaoalcantara.encurtador.exception.LinkNotFoundException;
 import com.joaoalcantara.encurtador.repository.LinkRepository;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -32,6 +34,7 @@ public class LinkService {
     private static final int MAX_CODE_ATTEMPTS = 5;
 
     private final LinkRepository linkRepository;
+    private final LinkLookup linkLookup;
     private final ShortCodeGenerator codeGenerator;
     private final Clock clock;
 
@@ -40,8 +43,12 @@ public class LinkService {
      * classe pode ser instanciada num teste sem subir o Spring. Como existe um
      * unico construtor, o @Autowired e dispensavel.
      */
-    public LinkService(LinkRepository linkRepository, ShortCodeGenerator codeGenerator, Clock clock) {
+    public LinkService(LinkRepository linkRepository,
+                       LinkLookup linkLookup,
+                       ShortCodeGenerator codeGenerator,
+                       Clock clock) {
         this.linkRepository = linkRepository;
+        this.linkLookup = linkLookup;
         this.codeGenerator = codeGenerator;
         this.clock = clock;
     }
@@ -62,6 +69,30 @@ public class LinkService {
         log.debug("Link criado: code={} url={}", code, url);
 
         return linkRepository.save(link);
+    }
+
+    /**
+     * Resolve um codigo curto no destino do redirecionamento.
+     *
+     * A leitura vem do LinkLookup, que passa pelo cache do Redis. A checagem de
+     * expiracao fica aqui, fora do cache, e a entrada cacheada carrega o
+     * expiresAt junto -- assim um link vencido e recusado mesmo que a copia no
+     * Redis continue viva. Se o cache guardasse so a URL, a expiracao passaria a
+     * depender do TTL do Redis: o link seguiria funcionando por ate uma hora
+     * depois de vencer.
+     *
+     * readOnly = true avisa ao Hibernate que nao havera escrita, o que dispensa
+     * o rastreamento de alteracoes das entidades carregadas.
+     */
+    @Transactional(readOnly = true)
+    public String resolve(String code) {
+        LinkTarget target = linkLookup.findTarget(code);
+
+        if (target == null || target.isExpired(clock.instant())) {
+            throw new LinkNotFoundException(code);
+        }
+
+        return target.originalUrl();
     }
 
     /**

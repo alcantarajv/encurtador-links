@@ -1,6 +1,7 @@
 package com.joaoalcantara.encurtador.repository;
 
 import com.joaoalcantara.encurtador.domain.Link;
+import java.util.Optional;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -27,6 +28,11 @@ public class JpaLinkRepository implements LinkRepository {
     @Override
     public boolean existsByCode(String code) {
         return repository.existsByCode(code);
+    }
+
+    @Override
+    public Optional<Link> findByCode(String code) {
+        return repository.findByCode(code);
     }
 
     @Override

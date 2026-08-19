@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.joaoalcantara.encurtador.domain.Link;
 import com.joaoalcantara.encurtador.exception.CodeGenerationException;
 import com.joaoalcantara.encurtador.exception.InvalidUrlException;
+import com.joaoalcantara.encurtador.exception.LinkNotFoundException;
 import com.joaoalcantara.encurtador.repository.InMemoryLinkRepository;
 import com.joaoalcantara.encurtador.repository.LinkRepository;
 import java.time.Clock;
@@ -37,7 +38,9 @@ class LinkServiceTest {
     }
 
     private LinkService serviceWith(ShortCodeGenerator generator) {
-        return new LinkService(repository, generator, clock);
+        // O LinkLookup e construido na mao: fora do Spring, a anotacao
+        // @Cacheable e inerte, entao o teste exercita a regra sem Redis.
+        return new LinkService(repository, new LinkLookup(repository), generator, clock);
     }
 
     @Test
@@ -139,5 +142,69 @@ class LinkServiceTest {
 
         assertThatThrownBy(() -> service.create(null, null))
                 .isInstanceOf(InvalidUrlException.class);
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve: o caminho do redirecionamento
+    // -----------------------------------------------------------------------
+
+    @Test
+    @DisplayName("resolve devolve a URL de destino do codigo")
+    void resolveDevolveUrlDeDestino() {
+        LinkService service = serviceWith(generatorReturning("abc1234"));
+        service.create("https://exemplo.com/destino", null);
+
+        assertThat(service.resolve("abc1234")).isEqualTo("https://exemplo.com/destino");
+    }
+
+    @Test
+    @DisplayName("resolve falha quando o codigo nao existe")
+    void resolveFalhaQuandoCodigoNaoExiste() {
+        LinkService service = serviceWith(generatorReturning("abc1234"));
+
+        assertThatThrownBy(() -> service.resolve("naoexiste"))
+                .isInstanceOf(LinkNotFoundException.class);
+    }
+
+    @Test
+    @DisplayName("resolve funciona para link sem data de expiracao")
+    void resolveFuncionaSemExpiracao() {
+        LinkService service = serviceWith(generatorReturning("abc1234"));
+        service.create("https://exemplo.com", null);
+
+        assertThat(service.resolve("abc1234")).isEqualTo("https://exemplo.com");
+    }
+
+    @Test
+    @DisplayName("resolve aceita link cuja expiracao ainda nao chegou")
+    void resolveAceitaLinkDentroDoPrazo() {
+        LinkService service = serviceWith(generatorReturning("abc1234"));
+        service.create("https://exemplo.com", NOW.plusSeconds(60));
+
+        assertThat(service.resolve("abc1234")).isEqualTo("https://exemplo.com");
+    }
+
+    /**
+     * O relogio esta fixo em NOW, entao um link que expirou "um segundo atras"
+     * e criado ja vencido -- e a checagem de expiracao do resolve tem que pegar.
+     */
+    @Test
+    @DisplayName("resolve trata link expirado como inexistente")
+    void resolveRecusaLinkExpirado() {
+        LinkService service = serviceWith(generatorReturning("abc1234"));
+        service.create("https://exemplo.com", NOW.minusSeconds(1));
+
+        assertThatThrownBy(() -> service.resolve("abc1234"))
+                .isInstanceOf(LinkNotFoundException.class);
+    }
+
+    @Test
+    @DisplayName("resolve recusa o link no instante exato da expiracao")
+    void resolveRecusaNoInstanteExatoDaExpiracao() {
+        LinkService service = serviceWith(generatorReturning("abc1234"));
+        service.create("https://exemplo.com", NOW);
+
+        assertThatThrownBy(() -> service.resolve("abc1234"))
+                .isInstanceOf(LinkNotFoundException.class);
     }
 }

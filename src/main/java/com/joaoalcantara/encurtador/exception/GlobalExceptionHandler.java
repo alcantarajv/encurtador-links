@@ -62,6 +62,20 @@ public class GlobalExceptionHandler {
         return problem;
     }
 
+    /**
+     * Codigo curto inexistente ou expirado.
+     *
+     * 404 e nao 410 (Gone): o 410 confirmaria que o codigo ja existiu.
+     */
+    @ExceptionHandler(LinkNotFoundException.class)
+    public ProblemDetail handleLinkNotFound(LinkNotFoundException exception) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.NOT_FOUND, "link nao encontrado ou expirado");
+        problem.setTitle("Link nao encontrado");
+
+        return problem;
+    }
+
     /** JSON malformado ou campo com tipo errado (ex.: data fora do formato ISO-8601). */
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ProblemDetail handleUnreadableBody(HttpMessageNotReadableException exception) {
