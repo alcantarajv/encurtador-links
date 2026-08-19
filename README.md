@@ -32,7 +32,7 @@ Este projeto foi construído com foco nesses pontos, e não apenas no CRUD de li
 | Banco de dados | PostgreSQL |
 | Cache | Redis |
 | Build | Maven |
-| Testes | JUnit 5, Testcontainers |
+| Testes | JUnit 5, AssertJ, Testcontainers |
 | Containerização | Docker / Docker Compose |
 | CI | GitHub Actions |
 
@@ -89,10 +89,14 @@ Para rodar os testes:
 .\mvnw test
 ```
 
-> A maior parte da suíte roda sem infraestrutura nenhuma. O teste de contexto
-> (`EncurtadorLinksApplicationTests`) sobe a aplicação inteira e por isso exige o
-> banco de pé: rode `docker compose up -d` antes. Essa dependência de um banco
-> ligado à mão é exatamente o problema que a Etapa 7 resolve com Testcontainers.
+**Não é preciso subir nada antes.** Os testes de integração levantam PostgreSQL e Redis em containers descartáveis via Testcontainers — só é necessário ter o Docker rodando. A suíte inteira leva cerca de 20 segundos.
+
+| Tipo | Quantidade | Infraestrutura |
+|---|---|---|
+| Unidade e fatia web | 67 | nenhuma |
+| Integração | 32 | containers criados pelo próprio teste |
+
+Os testes de integração cobrem justamente o que os de unidade não alcançam: o SQL de agregação, o cache no Redis (fora do Spring, o `@Cacheable` é inerte), o script Lua do rate limiter e o registro assíncrono de cliques de ponta a ponta.
 
 ## API
 
@@ -292,7 +296,9 @@ encurtador-links/
 │   ├── main/resources/
 │   │   ├── db/migration/            # Migrations do Flyway (V1__..., V2__...)
 │   │   └── application.properties
-│   └── test/java/                   # Testes espelhando a estrutura acima
+│   └── test/java/
+│       ├── integration/             # Testes com PostgreSQL e Redis reais (Testcontainers)
+│       └── ...                      # Demais testes espelham a estrutura de main
 ├── docker-compose.yml               # PostgreSQL e Redis para desenvolvimento local
 ├── mvnw / mvnw.cmd                  # Scripts do Maven Wrapper (Linux/macOS e Windows)
 └── pom.xml                          # Dependências e configuração de build
@@ -382,6 +388,16 @@ encurtador-links/
 **Timeout de conexão do HikariCP reduzido para 3 segundos.** O padrão é 30. Com o banco fora do ar, cada requisição que dependa dele segura uma thread do Tomcat por meio minuto — em poucos segundos de tráfego o servidor fica sem threads e para de responder até o que não depende do banco. Mesma lógica já aplicada ao Redis: falhar rápido é melhor do que travar.
 
 **`AsyncUncaughtExceptionHandler` em vez de `try/catch` dentro do método.** Um método `@Async void` não tem quem o espere: se lançar, ninguém recebe a exceção. A primeira versão tinha um `try/catch` no corpo do método, e ele dava falsa segurança — quando o banco está fora do ar, a falha acontece ao **abrir a transação**, no proxy que envolve o método, e o `try/catch` interno nunca é alcançado. O tratador global fica por fora de tudo e registra a falha com o evento completo.
+
+**Testcontainers em vez de infraestrutura ligada à mão.** Desde a Etapa 3 a suíte tinha um teste que só passava se alguém tivesse rodado `docker compose up -d` antes. Isso funciona no computador de quem lembra; não funciona no de quem acabou de clonar o projeto, e não funcionaria na integração contínua. Agora os containers são responsabilidade do próprio teste.
+
+**Containers estáticos iniciados em bloco `static`, não `@Testcontainers` + `@Container`.** O caminho que os tutoriais mostram sobe e derruba os containers a cada **classe** de teste — com cinco classes de integração, seriam cinco PostgreSQL subindo e descendo. Iniciando no bloco `static`, eles sobem uma vez por JVM e todas as classes compartilham. Ninguém precisa derrubá-los: o Testcontainers deixa um container auxiliar (Ryuk) encarregado de limpar quando o processo morre.
+
+**As imagens dos testes são as mesmas do `docker-compose.yml`.** Teste que roda numa versão diferente da de produção testa outra coisa.
+
+**Testes de integração sem `@Transactional`.** A anotação faria cada teste rodar dentro de uma transação revertida no fim, e as consultas nativas poderiam não enxergar dados ainda não gravados. Aqui os dados são gravados de verdade e a limpeza é explícita, no `@BeforeEach`.
+
+**O bug que essa etapa encontrou.** O `date_trunc('day', clicked_at)` sobre uma coluna `timestamptz` converte o valor para o fuso da **sessão** do banco antes de truncar — e o driver JDBC define esse fuso a partir do relógio da JVM. Numa máquina em UTC−3, um clique às 23:30Z e outro às 00:30Z do dia seguinte viravam 20:30 e 21:30 do *mesmo* dia local, e a série diária juntava os dois no dia errado. A correção foi `date_trunc('day', clicked_at AT TIME ZONE 'UTC')`. Nenhum teste de unidade poderia ter encontrado isso: o dublê em memória agrupa em Java, sempre em UTC. É a justificativa inteira da etapa em um caso.
 ## Autor
 
 **João Vitor Alcântara Corrêa**
