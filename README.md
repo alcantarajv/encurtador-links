@@ -1,5 +1,7 @@
 # Encurtador de Links
 
+[![CI](https://github.com/alcantarajv/encurtador-links/actions/workflows/ci.yml/badge.svg)](https://github.com/alcantarajv/encurtador-links/actions/workflows/ci.yml)
+
 API REST para encurtamento de links com redirecionamento de baixa latência, controle de abuso e coleta de métricas de acesso.
 
 > Projeto em desenvolvimento. Este README é atualizado a cada etapa concluída.
@@ -129,6 +131,21 @@ O `.env` é lido automaticamente pelo Compose e está no `.gitignore`. O `.env.e
 | Integração | 32 | containers criados pelo próprio teste |
 
 Os testes de integração cobrem justamente o que os de unidade não alcançam: o SQL de agregação, o cache no Redis (fora do Spring, o `@Cacheable` é inerte), o script Lua do rate limiter e o registro assíncrono de cliques de ponta a ponta.
+
+## Integração contínua
+
+Cada push e cada pull request para `main` disparam o workflow [`ci.yml`](.github/workflows/ci.yml), em duas etapas encadeadas:
+
+| Etapa | O que faz | Falha quando |
+|---|---|---|
+| **Testes** | roda os 99 testes, incluindo os de integração | qualquer teste quebra |
+| **Imagem Docker** | constrói a imagem, sobe a stack completa e chama a API | a imagem não constrói, não fica saudável ou não responde |
+
+A segunda só executa se a primeira passar. Construir imagem de um código já sabidamente quebrado é desperdício.
+
+A verificação da imagem não se contenta em construir: ela sobe o `docker compose --profile app` com `--wait` (que espera os healthchecks e falha se algum não passar), cria um link pela API e confere que o `Location` do redirecionamento aponta para a URL original. Uma imagem pode compilar e não subir — variável de ambiente faltando, permissão de diretório, `ENTRYPOINT` errado — e só a stack de pé respondendo descarta isso.
+
+Quando um teste falha, os relatórios do Surefire ficam disponíveis para download na página da execução; quando a etapa da imagem falha, o log da aplicação é impresso antes do runner ser destruído.
 
 ## API
 
@@ -318,6 +335,7 @@ As variáveis podem ser definidas no `.env` da raiz, que o Compose lê sozinho �
 
 ```
 encurtador-links/
+├── .github/workflows/ci.yml         # Integração contínua: testes e verificação da imagem
 ├── .mvn/wrapper/                    # Maven Wrapper — garante a mesma versão do Maven para todos
 ├── src/
 │   ├── main/java/.../encurtador/
@@ -460,6 +478,18 @@ encurtador-links/
 **Os testes não rodam dentro da imagem.** Desde a Etapa 7 os testes de integração sobem containers via Testcontainers, o que exige acesso a um daemon do Docker — que não existe dentro do container de build. Rodar a suíte é responsabilidade da máquina do desenvolvedor e da integração contínua (Etapa 9), onde o daemon está disponível.
 
 **`.dockerignore` antes de tudo.** Sem ele, o `docker build` empacota a pasta inteira e envia ao daemon — incluindo o `target/` com o jar de 66 MB e o `.git` com o histórico completo — só para descartar depois. Vale também como proteção: arquivo que não entra no contexto não tem como acabar dentro da imagem por descuido, e é por isso que o `.env` está listado lá.
+
+**Sem bloco `services:` no workflow.** Quase todo tutorial de CI para Spring Boot declara `services: postgres: ... redis: ...` dentro do arquivo do GitHub Actions. Desde a Etapa 7 isso seria duplicação — e pior: a versão e a configuração desses containers ficariam mantidas num segundo lugar, livres para divergir do `docker-compose.yml` sem ninguém notar. Quem sobe a infraestrutura de teste é o próprio teste, via Testcontainers, e o runner `ubuntu-latest` já traz o Docker instalado.
+
+**A CI sobe a aplicação, não só constrói a imagem.** Uma imagem pode compilar e não subir. O passo usa `docker compose --profile app up -d --wait`: o `--wait` espera todos os healthchecks e sai com erro se algum não passar no tempo previsto — sem ele, o comando retorna assim que os containers são criados e o teste seguinte correria contra uma aplicação ainda inicializando. Depois disso, um `curl` cria um link e confere o `Location` do redirecionamento.
+
+**`permissions: contents: read` declarado explicitamente.** O token que o GitHub injeta no job começa com as permissões do repositório. Este workflow só precisa ler código — não publica release, não comenta em PR, não escreve em lugar nenhum. Declarar o mínimo limita o estrago caso alguma dependência da build seja comprometida.
+
+**`concurrency` com `cancel-in-progress`.** Dois pushes seguidos no mesmo branch tornam a execução antiga irrelevante; cancelá-la libera a fila em vez de gastar minutos num resultado que ninguém vai ler.
+
+> ⚠️ O `mvnw` estava registrado no Git como `100644` — sem o bit de execução. O Windows não tem esse conceito, então o Git o gravou assim na Etapa 0 e nada quebrou até agora; num runner Linux, `./mvnw test` responderia `Permission denied`. A correção definitiva é `git update-index --chmod=+x mvnw`; o workflow também faz `chmod +x mvnw` como proteção.
+
+> ⚠️ As versões das actions andaram bem mais rápido do que o conteúdo publicado sugere: os tutoriais mostram `actions/checkout@v4` e `actions/setup-java@v3`, que estão três e duas versões maiores atrás de `@v7` e `@v5`.
 
 ## Autor
 
