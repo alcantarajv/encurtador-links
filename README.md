@@ -4,7 +4,9 @@
 
 API REST para encurtamento de links com redirecionamento de baixa latência, controle de abuso e coleta de métricas de acesso.
 
-> Projeto em desenvolvimento. Este README é atualizado a cada etapa concluída.
+**▶ No ar em [encurtador-links.onrender.com](https://encurtador-links.onrender.com)**
+
+> O serviço roda em plano gratuito e hiberna após 15 minutos sem tráfego. O primeiro acesso depois disso leva cerca de um minuto para responder — os seguintes são imediatos.
 
 ## Sobre o projeto
 
@@ -23,6 +25,8 @@ Este projeto foi construído com foco nesses pontos, e não apenas no CRUD de li
 - [x] Registro assíncrono de cliques (data/hora, referrer, user agent, hash do IP)
 - [x] Endpoint de estatísticas agregadas por link
 - [x] Empacotamento em imagem Docker e ambiente completo via Docker Compose
+- [x] Integração contínua no GitHub Actions, com verificação da imagem em execução
+- [x] Deploy público a partir da própria imagem, descrito em arquivo versionado
 - [ ] Documentação interativa da API via OpenAPI/Swagger
 - [ ] País de origem do clique _(exige base GeoIP — ver "Fora de escopo" abaixo)_
 
@@ -38,6 +42,7 @@ Este projeto foi construído com foco nesses pontos, e não apenas no CRUD de li
 | Testes | JUnit 5, AssertJ, Testcontainers |
 | Containerização | Docker / Docker Compose |
 | CI | GitHub Actions |
+| Deploy | Render (aplicação e cache) + Neon (PostgreSQL) |
 
 ## Como executar localmente
 
@@ -127,7 +132,7 @@ O `.env` é lido automaticamente pelo Compose e está no `.gitignore`. O `.env.e
 
 | Tipo | Quantidade | Infraestrutura |
 |---|---|---|
-| Unidade e fatia web | 67 | nenhuma |
+| Unidade e fatia web | 77 | nenhuma |
 | Integração | 32 | containers criados pelo próprio teste |
 
 Os testes de integração cobrem justamente o que os de unidade não alcançam: o SQL de agregação, o cache no Redis (fora do Spring, o `@Cacheable` é inerte), o script Lua do rate limiter e o registro assíncrono de cliques de ponta a ponta.
@@ -138,7 +143,7 @@ Cada push e cada pull request para `main` disparam o workflow [`ci.yml`](.github
 
 | Etapa | O que faz | Falha quando |
 |---|---|---|
-| **Testes** | roda os 99 testes, incluindo os de integração | qualquer teste quebra |
+| **Testes** | roda os 109 testes, incluindo os de integração | qualquer teste quebra |
 | **Imagem Docker** | constrói a imagem, sobe a stack completa e chama a API | a imagem não constrói, não fica saudável ou não responde |
 
 A segunda só executa se a primeira passar. Construir imagem de um código já sabidamente quebrado é desperdício.
@@ -146,6 +151,39 @@ A segunda só executa se a primeira passar. Construir imagem de um código já s
 A verificação da imagem não se contenta em construir: ela sobe o `docker compose --profile app` com `--wait` (que espera os healthchecks e falha se algum não passar), cria um link pela API e confere que o `Location` do redirecionamento aponta para a URL original. Uma imagem pode compilar e não subir — variável de ambiente faltando, permissão de diretório, `ENTRYPOINT` errado — e só a stack de pé respondendo descarta isso.
 
 Quando um teste falha, os relatórios do Surefire ficam disponíveis para download na página da execução; quando a etapa da imagem falha, o log da aplicação é impresso antes do runner ser destruído.
+
+## Deploy
+
+A aplicação está publicada no [Render](https://render.com), construída a partir do mesmo `Dockerfile` que roda localmente e na integração contínua. A infraestrutura está descrita em [`render.yaml`](render.yaml), versionado junto do código: quem lê o repositório vê o que está no ar, e uma mudança de configuração passa por commit em vez de acontecer num formulário que ninguém mais viu.
+
+| Componente | Onde | Plano |
+|---|---|---|
+| Aplicação | Render Web Service, a partir do `Dockerfile` | gratuito |
+| Cache e contadores de rate limit | Render Key Value | gratuito |
+| PostgreSQL | [Neon](https://neon.com) | gratuito, permanente |
+
+**Por que o banco não está no Render.** O PostgreSQL gratuito do Render é apagado 30 dias após a criação. Num projeto de portfólio isso significa o link ao vivo morrendo todo mês, provavelmente na semana em que alguém for olhar. O plano gratuito do Neon é permanente.
+
+**O deploy espera a CI.** O `autoDeployTrigger: checksPass` faz o Render só publicar se o workflow do GitHub Actions passar — um push que quebra os testes não chega em produção.
+
+### Limitações assumidas do plano gratuito
+
+| Comportamento | Efeito |
+|---|---|
+| A aplicação hiberna após 15 min sem tráfego | o primeiro acesso leva ~1 min; os seguintes são imediatos |
+| O banco do Neon suspende após 5 min ociosos | por isso `DB_CONNECTION_TIMEOUT` sobe para 10s no deploy, contra os 3s locais |
+| O Key Value é apenas em memória | o cache esvazia quando reinicia, e a aplicação volta a consultar o banco — que é exatamente o comportamento previsto |
+
+### O que a aplicação recusa em produção
+
+Toda configuração sensível deste projeto tem valor padrão, para que alguém que acabou de clonar o repositório consiga rodar sem preencher nada. Esse mesmo padrão vira armadilha em produção: a aplicação sobe, responde 200 e faz a coisa errada em silêncio.
+
+Com o perfil `prod` ativo, [`ProductionSafetyCheck`](src/main/java/com/joaoalcantara/encurtador/config/ProductionSafetyCheck.java) impede a subida em dois casos:
+
+- **o sal do hash de IP ainda é o de desenvolvimento** — ele está publicado neste repositório, então qualquer pessoa poderia calcular o SHA-256 dos 4 bilhões de IPv4 e descobrir, a partir do banco, quais IPs visitaram quais links;
+- **`SHORTENER_BASE_URL` aponta para `localhost`** — a aplicação funcionaria perfeitamente e devolveria `http://localhost:8080/abc1234` para todo mundo, com cada link criado inútil e nada no log denunciando.
+
+Falha barulhenta na hora do deploy custa minutos. Falha silenciosa custa o tempo entre o deploy e a hora em que alguém repara.
 
 ## API
 
@@ -316,6 +354,8 @@ O `/actuator/**` fica de fora do limitador de propósito: o health check é cham
 | `spring.datasource.url` | `DB_URL` | `jdbc:postgresql://localhost:5432/encurtador` | endereço do banco |
 | `spring.datasource.username` | `DB_USERNAME` | `encurtador` | usuário do banco |
 | `spring.datasource.password` | `DB_PASSWORD` | `encurtador` | senha do banco |
+| `server.port` | `PORT` | `8080` | porta em que a aplicação escuta — plataformas de hospedagem injetam a delas |
+| `spring.data.redis.url` | `REDIS_URL` | montada de `REDIS_HOST`/`REDIS_PORT` | URL única do Redis; tem precedência sobre host e porta |
 | `spring.data.redis.host` | `REDIS_HOST` | `localhost` | endereço do Redis |
 | `spring.data.redis.port` | `REDIS_PORT` | `6379` | porta do Redis |
 | `shortener.rate-limit.enabled` | `RATE_LIMIT_ENABLED` | `true` | liga/desliga o limitador |
@@ -325,7 +365,9 @@ O `/actuator/**` fica de fora do limitador de propósito: o health check é cham
 | `shortener.click-tracking.enabled` | `CLICK_TRACKING_ENABLED` | `true` | liga/desliga o registro de cliques |
 | `shortener.click-tracking.ip-salt` | `CLICK_IP_SALT` | valor de desenvolvimento | segredo usado no hash do IP — **trocar em produção** |
 | — | `APP_PORT` | `8080` | porta publicada no host pelo Compose (só afeta o container) |
-| `spring.profiles.active` | `SPRING_PROFILES_ACTIVE` | nenhum | no container vale `docker`, que reduz o nível de log e esconde os detalhes do `/actuator/health` |
+| `spring.datasource.hikari.maximum-pool-size` | `DB_POOL_SIZE` | `10` | teto de conexões do pool |
+| `spring.datasource.hikari.connection-timeout` | `DB_CONNECTION_TIMEOUT` | `3000` | espera por conexão livre, em ms — bancos que hibernam precisam de mais |
+| `spring.profiles.active` | `SPRING_PROFILES_ACTIVE` | nenhum | `docker` no container local; `prod` no deploy, que ativa os dois |
 
 Os valores padrão existem para desenvolvimento local e batem com o que o `docker-compose.yml` cria. Em produção todos vêm do ambiente — nenhuma credencial fica em arquivo versionado.
 
@@ -339,7 +381,7 @@ encurtador-links/
 ├── .mvn/wrapper/                    # Maven Wrapper — garante a mesma versão do Maven para todos
 ├── src/
 │   ├── main/java/.../encurtador/
-│   │   ├── config/                  # Beans de configuração (Clock, cache, propriedades)
+│   │   ├── config/                  # Beans de configuração, propriedades e checagens de produção
 │   │   ├── controller/              # Porta HTTP: recebe e devolve JSON
 │   │   ├── domain/                  # Modelo e regras do domínio
 │   │   ├── dto/                     # Contratos de entrada e saída da API
@@ -349,6 +391,7 @@ encurtador-links/
 │   │   └── service/                 # Regra de negócio
 │   ├── main/resources/
 │   │   ├── db/migration/            # Migrations do Flyway (V1__..., V2__...)
+│   │   ├── static/index.html        # Página inicial: demonstra a API sem terminal
 │   │   ├── application.properties
 │   │   └── application-docker.properties   # sobrepõe o base quando roda em container
 │   └── test/java/
@@ -358,6 +401,7 @@ encurtador-links/
 ├── .dockerignore                    # O que não é enviado ao daemon do Docker no build
 ├── docker-compose.yml               # PostgreSQL, Redis e a aplicação (esta, sob perfil)
 ├── .env.example                     # Modelo das variáveis lidas pelo Compose
+├── render.yaml                      # Infraestrutura do deploy, versionada
 ├── mvnw / mvnw.cmd                  # Scripts do Maven Wrapper (Linux/macOS e Windows)
 └── pom.xml                          # Dependências e configuração de build
 ```
@@ -490,6 +534,20 @@ encurtador-links/
 > ⚠️ O `mvnw` estava registrado no Git como `100644` — sem o bit de execução. O Windows não tem esse conceito, então o Git o gravou assim na Etapa 0 e nada quebrou até agora; num runner Linux, `./mvnw test` responderia `Permission denied`. A correção definitiva é `git update-index --chmod=+x mvnw`; o workflow também faz `chmod +x mvnw` como proteção.
 
 > ⚠️ As versões das actions andaram bem mais rápido do que o conteúdo publicado sugere: os tutoriais mostram `actions/checkout@v4` e `actions/setup-java@v3`, que estão três e duas versões maiores atrás de `@v7` e `@v5`.
+
+**A porta vem do ambiente.** `server.port=${PORT:8080}`. Plataformas de hospedagem escolhem a porta e a injetam em `PORT`; ficar preso ao 8080 é a causa número um de "deploy subiu mas não responde", porque a plataforma encaminha o tráfego para uma porta onde não há ninguém ouvindo. Localmente a variável não existe e vale o 8080 de sempre.
+
+**Uma URL de Redis, não host e porta.** Serviços gerenciados não entregam host e porta separados: entregam `rediss://:senha@host:6379`, com credenciais e às vezes TLS, e não há onde encaixar isso em dois campos. A configuração passou a ser `spring.data.redis.url=${REDIS_URL:redis://${REDIS_HOST:localhost}:${REDIS_PORT:6379}}` — dois níveis de default, de modo que o Compose continua funcionando com host e porta e o deploy usa a URL inteira.
+
+**Grupo de perfis em vez de arquivo duplicado.** O perfil `docker` já baixa o nível de log e esconde os detalhes do `/actuator/health`, e isso vale igualmente em produção. Em vez de repetir essas linhas num `application-prod.properties`, o `spring.profiles.group.prod=docker` faz o `prod` herdar o `docker` e acrescentar apenas o que é exclusivo de produção. No log da subida aparecem os dois: `The following 2 profiles are active: "prod", "docker"`.
+
+**A aplicação recusa subir mal configurada.** Ver "O que a aplicação recusa em produção", acima. A alternativa — subir e funcionar errado em silêncio — é pior justamente porque não parece um problema.
+
+**O deploy espera a CI.** `autoDeployTrigger: checksPass`, e não `commit`. Sem isso, o push que quebra os testes chega em produção antes de o GitHub Actions terminar de reprovar.
+
+**Uma página inicial estática, sem framework.** A raiz devolvia 404 — correto para uma API, ruim para quem abre o link do portfólio sem ler o README. É um arquivo HTML servido de `src/main/resources/static`, sem build, sem dependência nova: o que interessa neste projeto é o backend, e a página só precisa deixá-lo demonstrável sem abrir um terminal. Ela também exercita o formato de erro do projeto — mostra a mensagem de validação vinda do `errors` do Problem Details, e explica o 429 do rate limiting em vez de exibir o número cru.
+
+**O `DB_CONNECTION_TIMEOUT` virou configurável.** Os 3 segundos escolhidos na Etapa 6 partiam da premissa de um banco sempre acordado, para que uma falha derrubasse a requisição rápido em vez de segurar threads do Tomcat. Um banco de plano gratuito que hiberna quebra essa premissa: a primeira conexão depois da suspensão precisa esperar ele acordar. O valor continua 3s por padrão e sobe para 10s no deploy.
 
 ## Autor
 
