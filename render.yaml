@@ -1,0 +1,125 @@
+# Blueprint do Render: a infraestrutura do deploy descrita em arquivo, junto do
+# codigo, em vez de configurada a mao no painel.
+#
+# Vale pelo mesmo motivo do docker-compose.yml: quem le o repositorio ve o que
+# esta no ar, e uma mudanca de configuracao passa por commit e revisao em vez de
+# acontecer num formulario que ninguem mais viu.
+#
+# Como usar: no painel do Render, New > Blueprint, apontando para este
+# repositorio. Ele le este arquivo, cria os dois servicos e pergunta os valores
+# marcados com "sync: false".
+#
+# O PostgreSQL NAO esta aqui de proposito -- veja a nota no fim do arquivo.
+
+services:
+  # ---------------------------------------------------------------------------
+  # A aplicacao
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: encurtador-links
+    runtime: docker
+    plan: free
+    # Mesma regiao do cache abaixo: servicos so se enxergam pela rede privada
+    # se estiverem na mesma regiao. Virginia e a mais proxima do Brasil entre as
+    # oferecidas.
+    region: virginia
+    dockerfilePath: ./Dockerfile
+
+    # A imagem da Etapa 8 e usada como esta. Nao ha buildpack, nao ha comando de
+    # build aqui: o Render constroi o Dockerfile do repositorio, o mesmo que
+    # roda na sua maquina e na integracao continua.
+
+    # O Render chama este caminho para decidir se a instancia esta viva. Sem
+    # isso ele so olha se a porta abriu -- e a porta abre antes do Flyway
+    # terminar de migrar.
+    healthCheckPath: /actuator/health
+
+    # "checksPass" e nao "commit": o deploy so acontece se o workflow da Etapa 9
+    # passar. Um push que quebra os testes nao chega em producao.
+    autoDeployTrigger: checksPass
+
+    envVars:
+      # Ativa as verificacoes de ProductionSafetyCheck e, pelo grupo de perfis
+      # declarado no application.properties, tambem o perfil "docker" (log em
+      # INFO, /actuator/health sem detalhes).
+      - key: SPRING_PROFILES_ACTIVE
+        value: prod
+
+      # O Render gera um valor aleatorio de 256 bits na criacao e nunca o mostra
+      # em lugar nenhum -- exatamente o que se quer de um sal. Ele fica estavel
+      # entre deploys; se fosse regenerado, a contagem de visitantes distintos
+      # reiniciaria a cada subida.
+      - key: CLICK_IP_SALT
+        generateValue: true
+
+      # "sync: false" faz o Render perguntar o valor na criacao, em vez de
+      # deixa-lo escrito neste arquivo. O endereco e previsivel a partir do nome
+      # do servico: https://encurtador-links.onrender.com
+      - key: SHORTENER_BASE_URL
+        sync: false
+
+      # Credenciais do PostgreSQL no Neon (veja a nota no fim). Perguntadas na
+      # criacao e guardadas cifradas pelo Render.
+      - key: DB_URL
+        sync: false
+      - key: DB_USERNAME
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+
+      # A instancia gratuita tem 512 MB e o plano gratuito do Neon limita as
+      # conexoes simultaneas. Cinco conexoes sobram para o volume de um
+      # portfolio, e o pool cheio nunca fica sendo o gargalo antes da memoria.
+      - key: DB_POOL_SIZE
+        value: "5"
+
+      # O Neon suspende o banco depois de 5 minutos ocioso. A primeira conexao
+      # seguinte espera ele acordar, o que passa dos 3 segundos que valem
+      # localmente.
+      - key: DB_CONNECTION_TIMEOUT
+        value: "10000"
+
+      # Endereco do cache, resolvido pelo proprio Render a partir do servico
+      # abaixo. Nada e digitado, e se o cache for recriado o valor acompanha.
+      - key: REDIS_URL
+        fromService:
+          name: encurtador-cache
+          type: keyvalue
+          property: connectionString
+
+  # ---------------------------------------------------------------------------
+  # O cache e o contador do rate limiting
+  # ---------------------------------------------------------------------------
+  - type: keyvalue
+    name: encurtador-cache
+    plan: free
+    region: virginia
+
+    # Lista vazia: nenhum IP da internet alcanca o cache. So a aplicacao, pela
+    # rede privada do Render. Este campo e obrigatorio para keyvalue -- omiti-lo
+    # nao significa "fechado", significa blueprint invalido.
+    ipAllowList: []
+
+    # Descarta a chave menos usada quando a memoria acaba, em vez de recusar
+    # escrita. E o comportamento certo para cache: perder uma entrada custa uma
+    # consulta ao banco.
+    #
+    # Os contadores do rate limiting moram no mesmo Redis e tambem poderiam ser
+    # descartados sob pressao de memoria. Nao e problema: sao chaves minusculas
+    # com validade de um minuto, e o limitador falha aberto por decisao da
+    # Etapa 5 -- na duvida, deixa passar.
+    maxmemoryPolicy: allkeys-lru
+
+# -----------------------------------------------------------------------------
+# Por que o PostgreSQL nao esta neste arquivo
+#
+# O plano gratuito de PostgreSQL do Render e apagado 30 dias depois de criado,
+# com 14 dias de carencia para migrar para um plano pago. Num projeto de
+# portfolio isso significa o link ao vivo morrendo todo mes, provavelmente sem
+# aviso, provavelmente na semana em que alguem for olhar.
+#
+# O banco fica entao no Neon, cujo plano gratuito e permanente (0,5 GB, suspende
+# quando ocioso). As credenciais entram como DB_URL, DB_USERNAME e DB_PASSWORD.
+#
+# O Neon exige TLS: a DB_URL precisa terminar em ?sslmode=require.
+# -----------------------------------------------------------------------------
