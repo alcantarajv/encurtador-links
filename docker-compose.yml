@@ -1,8 +1,22 @@
-# Banco de dados local do projeto.
+# Infraestrutura e aplicacao do projeto.
 #
-# Sobe com:   docker compose up -d
-# Derruba:    docker compose down
-# Apaga tudo: docker compose down -v   (remove tambem o volume com os dados)
+# Dois modos de uso, de proposito:
+#
+#   docker compose up -d                   sobe SO o PostgreSQL e o Redis.
+#                                          E o modo do dia a dia: a aplicacao
+#                                          roda na IDE, com debug e hot reload.
+#
+#   docker compose --profile app up -d     sobe tambem a aplicacao, construida a
+#                                          partir do Dockerfile. E o modo "clonei
+#                                          o repositorio e quero ver rodando".
+#
+# O que faz a aplicacao ficar de fora do primeiro comando e a chave "profiles:"
+# no servico app: servico com perfil so sobe quando o perfil e pedido.
+#
+#   docker compose --profile app up -d --build   forca reconstruir a imagem
+#   docker compose logs -f app                   acompanha o log da aplicacao
+#   docker compose down                          derruba tudo
+#   docker compose down -v                       derruba e apaga os volumes
 #
 # Nota de versao: o campo "version:" no topo do arquivo esta obsoleto desde o
 # Docker Compose v2 e a maioria dos tutoriais ainda o mostra. Se voce colocar,
@@ -48,6 +62,69 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  app:
+    # Constroi a imagem a partir do Dockerfile na raiz do projeto.
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: encurtador-links:latest
+    container_name: encurtador-app
+
+    # Sem este perfil, "docker compose up -d" tambem construiria e subiria a
+    # aplicacao -- atrapalhando quem roda pela IDE, e brigando pela porta 8080.
+    profiles: ["app"]
+
+    depends_on:
+      # "service_started" (o padrao de um depends_on simples) so garante que o
+      # container foi criado, e nao que o banco aceita conexao. Com
+      # "service_healthy" o compose espera o healthcheck passar -- e o Flyway
+      # nao tenta migrar contra um banco que ainda esta subindo.
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+
+      # "postgres" e "redis" sao os nomes dos servicos acima. O compose cria uma
+      # rede propria e um DNS interno: dentro dela, o nome do servico resolve
+      # para o IP do container. Nao e "localhost" -- dentro do container da
+      # aplicacao, localhost e o proprio container.
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-encurtador}
+      DB_USERNAME: ${POSTGRES_USER:-encurtador}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-encurtador}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+
+      SHORTENER_BASE_URL: ${SHORTENER_BASE_URL:-http://localhost:8080}
+
+      # ATENCAO: este default existe so para o projeto rodar recem-clonado.
+      # Trocar o sal invalida a contagem de visitantes distintos ja gravada, e
+      # um sal publico permite a qualquer um confirmar se um IP visitou um link
+      # (basta calcular o hash e comparar). Em producao ele vem do cofre de
+      # segredos da plataforma. Ver .env.example.
+      CLICK_IP_SALT: ${CLICK_IP_SALT:-sal-de-desenvolvimento-trocar-em-producao}
+
+    ports:
+      - "${APP_PORT:-8080}:8080"
+
+    healthcheck:
+      # A imagem e alpine: o wget aqui e o do BusyBox, nao o do GNU. O --spider
+      # busca sem gravar arquivo. Nao ha curl na imagem de execucao, e instalar
+      # um so para o health check engordaria a imagem a toa.
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      # A aplicacao leva alguns segundos para subir (Flyway, pool de conexoes,
+      # contexto do Spring). Durante o start_period a falha nao conta como
+      # tentativa: sem ele o container seria marcado "unhealthy" na largada.
+      start_period: 40s
+
+    # Reinicia se a aplicacao morrer, mas nao se voce mesmo a parou.
+    restart: unless-stopped
 
 volumes:
   postgres-data:
