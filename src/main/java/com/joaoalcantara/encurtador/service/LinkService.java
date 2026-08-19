@@ -81,18 +81,32 @@ public class LinkService {
      * depender do TTL do Redis: o link seguiria funcionando por ate uma hora
      * depois de vencer.
      *
-     * readOnly = true avisa ao Hibernate que nao havera escrita, o que dispensa
-     * o rastreamento de alteracoes das entidades carregadas.
+     * Devolve o LinkTarget inteiro, e nao so a URL, porque desde a Etapa 6 o
+     * controller tambem precisa do id do link para registrar o clique -- e ele
+     * ja veio junto do cache, sem custo nenhum.
+     *
+     * REPARE NA AUSENCIA DE @Transactional
+     *
+     * Ate a Etapa 6 este metodo era anotado com @Transactional(readOnly = true),
+     * o que parecia inofensivo. Nao era: a transacao abre ANTES de o cache ser
+     * consultado, entao toda resposta -- inclusive as que o Redis ja tinha --
+     * pegava uma conexao do pool do PostgreSQL. Com o banco fora do ar, o
+     * redirecionamento de um link cacheado respondia 500 depois de esperar o
+     * tempo limite de conexao, sem nunca ter precisado do banco.
+     *
+     * Sem a anotacao, o acerto de cache nao encosta no PostgreSQL. Na falta do
+     * cache, o findByCode do repositorio abre a sua propria transacao -- o
+     * Spring Data ja faz isso em cada metodo -- e uma leitura unica nao precisa
+     * de transacao maior do que ela mesma.
      */
-    @Transactional(readOnly = true)
-    public String resolve(String code) {
+    public LinkTarget resolve(String code) {
         LinkTarget target = linkLookup.findTarget(code);
 
         if (target == null || target.isExpired(clock.instant())) {
             throw new LinkNotFoundException(code);
         }
 
-        return target.originalUrl();
+        return target;
     }
 
     /**
