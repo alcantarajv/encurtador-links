@@ -2,7 +2,12 @@ package com.joaoalcantara.encurtador.config;
 
 import com.joaoalcantara.encurtador.domain.LinkTarget;
 import java.time.Duration;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.cache.Cache;
+import org.springframework.cache.annotation.CachingConfigurer;
 import org.springframework.cache.annotation.EnableCaching;
+import org.springframework.cache.interceptor.CacheErrorHandler;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.cache.RedisCacheConfiguration;
@@ -30,7 +35,7 @@ import org.springframework.data.redis.serializer.StringRedisSerializer;
  */
 @Configuration
 @EnableCaching
-public class RedisCacheConfig {
+public class RedisCacheConfig implements CachingConfigurer {
 
     /**
      * Quanto tempo uma entrada fica no Redis.
@@ -40,6 +45,8 @@ public class RedisCacheConfig {
      * o cache nao crescer indefinidamente e para que uma entrada eventualmente
      * volte a ser lida do banco.
      */
+    private static final Logger log = LoggerFactory.getLogger(RedisCacheConfig.class);
+
     private static final Duration ENTRY_TTL = Duration.ofHours(1);
 
     @Bean
@@ -66,5 +73,46 @@ public class RedisCacheConfig {
                 // tipado em LinkTarget o JSON sai limpo, sem campo de tipo.
                 .serializeValuesWith(RedisSerializationContext.SerializationPair
                         .fromSerializer(new JacksonJsonRedisSerializer<>(LinkTarget.class)));
+    }
+
+    /**
+     * O que fazer quando o Redis nao responde.
+     *
+     * Por padrao o Spring deixa o erro subir: com o Redis fora do ar, TODO
+     * redirecionamento falharia -- mesmo o PostgreSQL estando saudavel e tendo a
+     * resposta. O cache deixaria de ser otimizacao e viraria ponto unico de
+     * falha.
+     *
+     * Aqui o erro e registrado e engolido: a chamada segue para o banco como se
+     * fosse um cache miss. O servico fica mais lento e continua correto.
+     *
+     * E a mesma decisao tomada no RedisRateLimiter -- falhar aberto. As duas
+     * precisam concordar: de nada adiantaria o limitador liberar a requisicao se
+     * o cache derrubasse ela logo em seguida.
+     */
+    @Override
+    public CacheErrorHandler errorHandler() {
+        return new CacheErrorHandler() {
+
+            @Override
+            public void handleCacheGetError(RuntimeException exception, Cache cache, Object key) {
+                log.warn("Falha ao ler do cache {} (chave {}): {}", cache.getName(), key, exception.getMessage());
+            }
+
+            @Override
+            public void handleCachePutError(RuntimeException exception, Cache cache, Object key, Object value) {
+                log.warn("Falha ao gravar no cache {} (chave {}): {}", cache.getName(), key, exception.getMessage());
+            }
+
+            @Override
+            public void handleCacheEvictError(RuntimeException exception, Cache cache, Object key) {
+                log.warn("Falha ao remover do cache {} (chave {}): {}", cache.getName(), key, exception.getMessage());
+            }
+
+            @Override
+            public void handleCacheClearError(RuntimeException exception, Cache cache) {
+                log.warn("Falha ao limpar o cache {}: {}", cache.getName(), exception.getMessage());
+            }
+        };
     }
 }

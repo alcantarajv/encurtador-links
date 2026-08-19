@@ -10,7 +10,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.joaoalcantara.encurtador.config.RateLimitProperties;
 import com.joaoalcantara.encurtador.config.ShortenerProperties;
+import com.joaoalcantara.encurtador.ratelimit.RateLimiter;
 import com.joaoalcantara.encurtador.domain.Link;
 import com.joaoalcantara.encurtador.exception.InvalidUrlException;
 import com.joaoalcantara.encurtador.service.LinkService;
@@ -35,8 +37,12 @@ import org.springframework.test.web.servlet.MockMvc;
  *  - @MockBean foi removido; o substituto e @MockitoBean, do spring-test
  */
 @WebMvcTest(LinkController.class)
-@EnableConfigurationProperties(ShortenerProperties.class)
-@TestPropertySource(properties = "shortener.base-url=http://localhost:8080")
+@EnableConfigurationProperties({ShortenerProperties.class, RateLimitProperties.class})
+@TestPropertySource(properties = {
+        "shortener.base-url=http://localhost:8080",
+        // O rate limiting tem teste proprio; aqui ele so atrapalharia.
+        "shortener.rate-limit.enabled=false"
+})
 @DisplayName("POST /api/v1/links")
 class LinkControllerTest {
 
@@ -47,6 +53,11 @@ class LinkControllerTest {
 
     @MockitoBean
     private LinkService linkService;
+
+    // O WebConfig registra os interceptores e precisa deste bean para existir,
+    // mesmo com o limite desligado.
+    @MockitoBean
+    private RateLimiter rateLimiter;
 
     @Test
     @DisplayName("retorna 201 com o link criado e o header Location")

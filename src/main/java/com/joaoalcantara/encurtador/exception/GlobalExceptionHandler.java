@@ -6,8 +6,10 @@ import java.util.Map;
 import java.util.TreeMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -74,6 +76,29 @@ public class GlobalExceptionHandler {
         problem.setTitle("Link nao encontrado");
 
         return problem;
+    }
+
+    /**
+     * Limite de requisicoes estourado.
+     *
+     * Retorna ResponseEntity e nao ProblemDetail puro porque esta resposta
+     * precisa carregar o cabecalho Retry-After -- o padrao HTTP para dizer
+     * "tente de novo daqui a tantos segundos". Um cliente bem-comportado le esse
+     * cabecalho e espera, em vez de insistir e piorar a situacao.
+     */
+    @ExceptionHandler(RateLimitExceededException.class)
+    public ResponseEntity<ProblemDetail> handleRateLimitExceeded(RateLimitExceededException exception) {
+        long retryAfterSeconds = Math.max(exception.getRetryAfter().toSeconds(), 1);
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.TOO_MANY_REQUESTS,
+                "limite de requisicoes excedido; tente novamente em " + retryAfterSeconds + "s");
+        problem.setTitle("Muitas requisicoes");
+        problem.setProperty("retryAfterSeconds", retryAfterSeconds);
+
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(retryAfterSeconds))
+                .body(problem);
     }
 
     /** JSON malformado ou campo com tipo errado (ex.: data fora do formato ISO-8601). */

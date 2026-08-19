@@ -10,16 +10,22 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.joaoalcantara.encurtador.config.RateLimitProperties;
 import com.joaoalcantara.encurtador.exception.LinkNotFoundException;
+import com.joaoalcantara.encurtador.ratelimit.RateLimiter;
 import com.joaoalcantara.encurtador.service.LinkService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 @WebMvcTest(RedirectController.class)
+@EnableConfigurationProperties(RateLimitProperties.class)
+@TestPropertySource(properties = "shortener.rate-limit.enabled=false")
 @DisplayName("GET /{code}")
 class RedirectControllerTest {
 
@@ -28,6 +34,9 @@ class RedirectControllerTest {
 
     @MockitoBean
     private LinkService linkService;
+
+    @MockitoBean
+    private RateLimiter rateLimiter;
 
     @Test
     @DisplayName("redireciona com 302 para a URL de destino")
