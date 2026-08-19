@@ -1,3 +1,11 @@
+| `shortener.base-url` | `SHORTENER_BASE_URL` | `http://localhost:8080` | endereço público usado para montar a URL curta devolvida na resposta |
+| `spring.datasource.url` | `DB_URL` | `jdbc:postgresql://localhost:5432/encurtador` | endereço do banco |
+| `spring.datasource.username` | `DB_USERNAME` | `encurtador` | usuário do banco |
+| `spring.datasource.password` | `DB_PASSWORD` | `encurtador` | senha do banco |
+
+Os valores padrão existem para desenvolvimento local e batem com o que o
+`docker-compose.yml` cria. Em produção, todos vêm do ambiente — nenhuma
+credencial fica em arquivo versionado.
 # Encurtador de Links
 
 API REST para encurtamento de links com redirecionamento de baixa latência, controle de abuso e coleta de métricas de acesso.
@@ -14,7 +22,7 @@ Este projeto foi construído com foco nesses pontos, e não apenas no CRUD de li
 
 - [x] Criação de links curtos com código aleatório em Base62 e verificação de colisão
 - [x] Validação de entrada com respostas de erro no formato Problem Details (RFC 9457)
-- [ ] Persistência em PostgreSQL
+- [x] Persistência em PostgreSQL com migrations versionadas (Flyway)
 - [ ] Redirecionamento HTTP com cache em memória distribuída (Redis)
 - [ ] Expiração opcional de links _(o campo já é aceito e armazenado; a checagem entra com o redirecionamento)_
 - [ ] Rate limiting por IP para prevenir abuso na criação de links
@@ -37,7 +45,21 @@ Este projeto foi construído com foco nesses pontos, e não apenas no CRUD de li
 
 ## Como executar localmente
 
-**Pré-requisito:** JDK 21 instalado. O Maven não precisa ser instalado — o projeto usa o Maven Wrapper.
+**Pré-requisitos:** JDK 21 e Docker Desktop. O Maven não precisa ser instalado — o projeto usa o Maven Wrapper.
+
+**1. Suba o banco de dados:**
+
+```bash
+docker compose up -d
+```
+
+Isso levanta um PostgreSQL 17 na porta 5432. Para conferir se está saudável:
+
+```bash
+docker compose ps
+```
+
+**2. Suba a aplicação:**
 
 ```bash
 # Windows
@@ -47,7 +69,14 @@ Este projeto foi construído com foco nesses pontos, e não apenas no CRUD de li
 ./mvnw spring-boot:run
 ```
 
-A aplicação sobe em `http://localhost:8080`.
+Na primeira subida o Flyway cria a tabela `links` e registra a migration aplicada. A aplicação sobe em `http://localhost:8080`.
+
+Para derrubar o banco (mantendo os dados) ou apagar tudo:
+
+```bash
+docker compose down
+docker compose down -v
+```
 
 Para verificar se está no ar:
 
@@ -67,9 +96,12 @@ Para rodar os testes:
 .\mvnw test
 ```
 
-## API
+> A maior parte da suíte roda sem infraestrutura nenhuma. O teste de contexto
+> (`EncurtadorLinksApplicationTests`) sobe a aplicação inteira e por isso exige o
+> banco de pé: rode `docker compose up -d` antes. Essa dependência de um banco
+> ligado à mão é exatamente o problema que a Etapa 7 resolve com Testcontainers.
 
-> **Atenção:** até a Etapa 3 os links ficam em memória. Reiniciar a aplicação apaga tudo.
+## API
 
 ### `POST /api/v1/links` — cria um link curto
 
@@ -128,6 +160,11 @@ curl -i -X POST http://localhost:8080/api/v1/links -H "Content-Type: application
 | Propriedade | Variável de ambiente | Padrão | Para que serve |
 |---|---|---|---|
 | `shortener.base-url` | `SHORTENER_BASE_URL` | `http://localhost:8080` | endereço público usado para montar a URL curta devolvida na resposta |
+| `spring.datasource.url` | `DB_URL` | `jdbc:postgresql://localhost:5432/encurtador` | endereço do banco |
+| `spring.datasource.username` | `DB_USERNAME` | `encurtador` | usuário do banco |
+| `spring.datasource.password` | `DB_PASSWORD` | `encurtador` | senha do banco |
+
+Os valores padrão existem para desenvolvimento local e batem com o que o `docker-compose.yml` cria. Em produção todos vêm do ambiente — nenhuma credencial fica em arquivo versionado.
 
 ## Estrutura do projeto
 
@@ -143,8 +180,11 @@ encurtador-links/
 │   │   ├── exception/               # Exceções de negócio e tratador global
 │   │   ├── repository/              # Contrato de armazenamento e implementações
 │   │   └── service/                 # Regra de negócio
-│   ├── main/resources/              # application.properties
+│   ├── main/resources/
+│   │   ├── db/migration/            # Migrations do Flyway (V1__..., V2__...)
+│   │   └── application.properties
 │   └── test/java/                   # Testes espelhando a estrutura acima
+├── docker-compose.yml               # PostgreSQL para desenvolvimento local
 ├── mvnw / mvnw.cmd                  # Scripts do Maven Wrapper (Linux/macOS e Windows)
 └── pom.xml                          # Dependências e configuração de build
 ```
@@ -168,6 +208,18 @@ encurtador-links/
 **`Clock` injetado como bean.** Chamar `Instant.now()` dentro da regra de negócio deixa o código impossível de testar — não dá para escrever "dado que agora são 10h". Com o relógio injetado, o teste usa `Clock.fixed` e controla o tempo.
 
 **URL base como configuração, não deduzida da requisição.** Atrás de um proxy ou load balancer, o host que chega na requisição não é o host público. Por isso `shortener.base-url` é configuração, lida de variável de ambiente em produção.
+
+**Migrations com Flyway, e `ddl-auto=validate` no Hibernate.** Deixar o Hibernate criar as tabelas (`ddl-auto=update`) é o caminho fácil e o mais perigoso: o schema passa a ser um efeito colateral das classes Java, ninguém sabe qual versão está em produção e não existe forma de reverter. Com Flyway, cada alteração é um arquivo SQL versionado no Git, aplicado uma vez e registrado na tabela `flyway_schema_history`. O `validate` fecha o cerco: se a entidade e a tabela discordarem, a aplicação se recusa a subir — o erro aparece no deploy, não horas depois numa consulta em produção.
+
+**Índice único em `code`, no banco.** A verificação de colisão em Java tem uma janela entre o `SELECT` e o `INSERT` em que outra requisição pode gravar o mesmo código. Só o banco fecha essa janela. O índice serve também ao desempenho: o redirecionamento (Etapa 4) busca sempre por `code`, e sem índice cada acesso viraria varredura da tabela inteira.
+
+**`TIMESTAMPTZ` em vez de `TIMESTAMP`.** O tipo sem fuso guarda "10:00" sem dizer 10:00 de onde. Com servidor e usuários em fusos diferentes, isso vira bug de expiração de link. O Hibernate está configurado para gravar e ler em UTC.
+
+**Adaptador entre o serviço e o Spring Data.** O mais comum é `LinkRepository extends JpaRepository`, o que obrigaria o `LinkService` a conhecer o Spring Data e os vinte e poucos métodos que ele traz. Aqui a porta `LinkRepository` continua com dois métodos e um adaptador (`JpaLinkRepository`) faz o repasse. O preço é uma classe de repasse; o retorno é que a entrada do PostgreSQL não alterou nenhuma linha da regra de negócio, e os testes de regra continuam rodando em memória, sem banco e sem Docker.
+
+**`equals`/`hashCode` pelo `code`, nunca pelo `id`.** Armadilha clássica de JPA: uma entidade nova tem `id` nulo até ser gravada, então usar o `id` faz o objeto mudar de identidade no meio da transação e quebra `HashSet` e `HashMap`. O `code` é atribuído na construção e nunca muda.
+
+**`spring.jpa.open-in-view=false`.** O padrão do Spring Boot (`true`) mantém a sessão do Hibernate aberta até a resposta HTTP terminar: segura conexão do pool à toa e esconde consultas disparadas durante a serialização do JSON. Desligado, o carregamento de dados fica todo dentro do serviço, onde dá para enxergar.
 
 ## Autor
 
