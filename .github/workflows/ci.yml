@@ -1,0 +1,132 @@
+# Integracao continua: roda a cada push e a cada pull request.
+#
+# Sao duas etapas encadeadas, e a ordem e proposital:
+#
+#   1. testes  -- a suite completa, 99 testes, incluindo os de integracao
+#   2. imagem  -- constroi a imagem Docker, sobe a stack e confere que responde
+#
+# A segunda so roda se a primeira passar. Nao adianta gastar dois minutos
+# construindo imagem de um codigo que ja se sabe quebrado.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Permite disparar manualmente pela aba Actions, util para reexecutar sem
+  # precisar inventar um commit.
+  workflow_dispatch:
+
+# O token que o GitHub injeta no job comeca com as permissoes do repositorio.
+# Este workflow so precisa ler o codigo -- nao publica release, nao comenta em
+# PR, nao escreve em lugar nenhum. Declarar o minimo limita o estrago caso uma
+# dependencia da build seja comprometida.
+permissions:
+  contents: read
+
+# Se chegarem dois pushes seguidos no mesmo branch, cancela a execucao antiga:
+# o resultado dela ja nao interessa e a fila fica livre para a nova.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  testes:
+    name: Testes
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixa o codigo
+        uses: actions/checkout@v7
+
+      - name: Instala o JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          # Guarda o ~/.m2/repository entre execucoes, com a chave derivada do
+          # hash do pom.xml. Sem isso, cada execucao rebaixa as ~100
+          # dependencias do zero.
+          cache: maven
+
+      # O bit de execucao nao existe no Windows, entao o Git registrou o mvnw
+      # como 100644 (nao executavel) e o runner Linux responderia "Permission
+      # denied". A correcao definitiva e no proprio repositorio --
+      # "git update-index --chmod=+x mvnw" -- mas esta linha custa nada e
+      # protege contra o problema voltar.
+      - name: Garante que o mvnw e executavel
+        run: chmod +x mvnw
+
+      # Os testes de integracao sobem PostgreSQL e Redis via Testcontainers, e
+      # o runner ubuntu-latest ja vem com o Docker instalado e disponivel para
+      # o usuario da build.
+      #
+      # ATENCAO: quase todo tutorial de CI para Spring Boot declara um bloco
+      # "services:" com postgres e redis aqui. Desde a Etapa 7 isso seria
+      # duplicacao -- e pior, os containers do "services:" teriam versao e
+      # configuracao mantidas em outro lugar, podendo divergir do
+      # docker-compose.yml sem ninguem perceber. Quem sobe a infraestrutura de
+      # teste e o proprio teste.
+      #
+      # -B  modo batch, sem interatividade
+      # -ntp  esconde as linhas de progresso de download, que so poluem o log
+      - name: Roda a suite completa
+        run: ./mvnw -B -ntp test
+
+      # Quando um teste quebra, o log do Maven mostra so o resumo. Os XML e TXT
+      # do Surefire trazem a stack trace inteira, e ficam disponiveis para
+      # download na pagina da execucao.
+      - name: Guarda os relatorios quando algo falha
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: relatorios-surefire
+          path: target/surefire-reports/
+          retention-days: 7
+
+  imagem:
+    name: Imagem Docker
+    # So comeca depois que o job de testes terminar bem.
+    needs: testes
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixa o codigo
+        uses: actions/checkout@v7
+
+      # Construir nao basta: uma imagem pode compilar e nao subir -- variavel de
+      # ambiente faltando, usuario sem permissao no diretorio, ENTRYPOINT
+      # errado. So a stack de pe respondendo prova que o empacotamento da Etapa
+      # 8 continua valido.
+      - name: Constroi a imagem
+        run: docker compose --profile app build
+
+      # O --wait faz o compose esperar todos os healthchecks passarem e sair
+      # com erro se algum nao passar no tempo previsto. Sem ele, o comando
+      # retorna assim que os containers sao criados e o teste seguinte correria
+      # contra uma aplicacao que ainda esta subindo.
+      - name: Sobe a stack completa
+        run: docker compose --profile app up -d --wait
+
+      - name: Confere que a API responde
+        run: |
+          CODE=$(curl -sf -X POST http://localhost:8080/api/v1/links \
+                   -H 'Content-Type: application/json' \
+                   -d '{"originalUrl":"https://example.com/ci"}' \
+                 | sed -n 's/.*"code":"\([^"]*\)".*/\1/p')
+          test -n "$CODE"
+          echo "Link criado: $CODE"
+
+          # %{redirect_url} devolve o cabecalho Location sem seguir o
+          # redirecionamento -- e o 302 que interessa aqui, nao o destino.
+          DESTINO=$(curl -sf -o /dev/null -w '%{redirect_url}' "http://localhost:8080/$CODE")
+          test "$DESTINO" = "https://example.com/ci"
+          echo "Redirecionou para: $DESTINO"
+
+      # Se qualquer passo acima falhar, o log da aplicacao e a primeira coisa
+      # que se quer ver -- e ele morre junto com o runner.
+      - name: Mostra o log da aplicacao quando algo falha
+        if: failure()
+        run: docker compose --profile app logs app
