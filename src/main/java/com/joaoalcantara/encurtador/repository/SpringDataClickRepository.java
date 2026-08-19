@@ -30,9 +30,25 @@ public interface SpringDataClickRepository extends JpaRepository<Click, Long> {
      * entao o custo dessa amarracao e conhecido e aceito.
      *
      * Devolve Object[] com (java.sql.Date, Long) -- o adaptador converte.
+     *
+     * REPARE NO "AT TIME ZONE 'UTC'" -- ELE NAO E DECORATIVO
+     *
+     * date_trunc sobre uma coluna timestamptz converte o valor para o fuso da
+     * SESSAO do banco antes de truncar, e o driver JDBC define esse fuso a
+     * partir do relogio da JVM. Numa maquina em UTC-3, um clique as 23:30Z e
+     * outro as 00:30Z do dia seguinte viravam 20:30 e 21:30 do MESMO dia local:
+     * a serie diaria juntava os dois no dia errado.
+     *
+     * O "AT TIME ZONE 'UTC'" converte para timestamp sem fuso, fixado em UTC,
+     * antes do truncamento -- e o resultado deixa de depender de onde a
+     * aplicacao esta rodando.
+     *
+     * Bug encontrado pelo teste de integracao da Etapa 7. Nenhum teste de
+     * unidade poderia te-lo encontrado: o dublê em memoria agrupa em Java,
+     * sempre em UTC.
      */
     @Query(value = """
-            SELECT date_trunc('day', clicked_at)::date AS day, COUNT(*) AS clicks
+            SELECT date_trunc('day', clicked_at AT TIME ZONE 'UTC')::date AS day, COUNT(*) AS clicks
             FROM clicks
             WHERE link_id = :linkId AND clicked_at >= :since
             GROUP BY day
