@@ -1,11 +1,3 @@
-| `shortener.base-url` | `SHORTENER_BASE_URL` | `http://localhost:8080` | endereço público usado para montar a URL curta devolvida na resposta |
-| `spring.datasource.url` | `DB_URL` | `jdbc:postgresql://localhost:5432/encurtador` | endereço do banco |
-| `spring.datasource.username` | `DB_USERNAME` | `encurtador` | usuário do banco |
-| `spring.datasource.password` | `DB_PASSWORD` | `encurtador` | senha do banco |
-
-Os valores padrão existem para desenvolvimento local e batem com o que o
-`docker-compose.yml` cria. Em produção, todos vêm do ambiente — nenhuma
-credencial fica em arquivo versionado.
 # Encurtador de Links
 
 API REST para encurtamento de links com redirecionamento de baixa latência, controle de abuso e coleta de métricas de acesso.
@@ -23,8 +15,8 @@ Este projeto foi construído com foco nesses pontos, e não apenas no CRUD de li
 - [x] Criação de links curtos com código aleatório em Base62 e verificação de colisão
 - [x] Validação de entrada com respostas de erro no formato Problem Details (RFC 9457)
 - [x] Persistência em PostgreSQL com migrations versionadas (Flyway)
-- [ ] Redirecionamento HTTP com cache em memória distribuída (Redis)
-- [ ] Expiração opcional de links _(o campo já é aceito e armazenado; a checagem entra com o redirecionamento)_
+- [x] Redirecionamento HTTP com cache em memória distribuída (Redis)
+- [x] Expiração opcional de links
 - [ ] Rate limiting por IP para prevenir abuso na criação de links
 - [ ] Registro assíncrono de cliques (data/hora, referrer, user agent, país)
 - [ ] Endpoint de estatísticas agregadas por link
@@ -53,7 +45,7 @@ Este projeto foi construído com foco nesses pontos, e não apenas no CRUD de li
 docker compose up -d
 ```
 
-Isso levanta um PostgreSQL 17 na porta 5432. Para conferir se está saudável:
+Isso levanta um PostgreSQL 17 na porta 5432 e um Redis 8 na porta 6379. Para conferir se estão saudáveis:
 
 ```bash
 docker compose ps
@@ -155,6 +147,34 @@ Exemplo de chamada:
 curl -i -X POST http://localhost:8080/api/v1/links -H "Content-Type: application/json" -d "{\"originalUrl\":\"https://www.google.com\"}"
 ```
 
+### `GET /{code}` — redireciona para a URL original
+
+```bash
+curl -i http://localhost:8080/GSIVMAP
+```
+
+Resposta `302 Found`:
+
+```
+HTTP/1.1 302
+Location: https://spring.io/projects/spring-boot
+Cache-Control: no-store
+```
+
+Se o código não existir **ou o link já tiver expirado**, a resposta é `404`, com o mesmo corpo nos dois casos — responder "existiu, mas venceu" entregaria de graça a informação de que aquele código já foi válido.
+
+```json
+{
+  "type": "about:blank",
+  "title": "Link nao encontrado",
+  "status": 404,
+  "detail": "link nao encontrado ou expirado",
+  "instance": "/8zvpfK3"
+}
+```
+
+O caminho aceita apenas de 4 a 16 caracteres alfanuméricos. Qualquer outra coisa (`/favicon.ico`, `/robots.txt`) devolve 404 sem chegar a consultar o cache ou o banco.
+
 ## Configuração
 
 | Propriedade | Variável de ambiente | Padrão | Para que serve |
@@ -163,6 +183,8 @@ curl -i -X POST http://localhost:8080/api/v1/links -H "Content-Type: application
 | `spring.datasource.url` | `DB_URL` | `jdbc:postgresql://localhost:5432/encurtador` | endereço do banco |
 | `spring.datasource.username` | `DB_USERNAME` | `encurtador` | usuário do banco |
 | `spring.datasource.password` | `DB_PASSWORD` | `encurtador` | senha do banco |
+| `spring.data.redis.host` | `REDIS_HOST` | `localhost` | endereço do Redis |
+| `spring.data.redis.port` | `REDIS_PORT` | `6379` | porta do Redis |
 
 Os valores padrão existem para desenvolvimento local e batem com o que o `docker-compose.yml` cria. Em produção todos vêm do ambiente — nenhuma credencial fica em arquivo versionado.
 
@@ -184,7 +206,7 @@ encurtador-links/
 │   │   ├── db/migration/            # Migrations do Flyway (V1__..., V2__...)
 │   │   └── application.properties
 │   └── test/java/                   # Testes espelhando a estrutura acima
-├── docker-compose.yml               # PostgreSQL para desenvolvimento local
+├── docker-compose.yml               # PostgreSQL e Redis para desenvolvimento local
 ├── mvnw / mvnw.cmd                  # Scripts do Maven Wrapper (Linux/macOS e Windows)
 └── pom.xml                          # Dependências e configuração de build
 ```
@@ -220,6 +242,23 @@ encurtador-links/
 **`equals`/`hashCode` pelo `code`, nunca pelo `id`.** Armadilha clássica de JPA: uma entidade nova tem `id` nulo até ser gravada, então usar o `id` faz o objeto mudar de identidade no meio da transação e quebra `HashSet` e `HashMap`. O `code` é atribuído na construção e nunca muda.
 
 **`spring.jpa.open-in-view=false`.** O padrão do Spring Boot (`true`) mantém a sessão do Hibernate aberta até a resposta HTTP terminar: segura conexão do pool à toa e esconde consultas disparadas durante a serialização do JSON. Desligado, o carregamento de dados fica todo dentro do serviço, onde dá para enxergar.
+
+
+**Redirecionamento com 302, não 301.** O `301 Moved Permanently` é mais rápido: o navegador memoriza o destino e nas próximas vezes sequer chama o serviço. É exatamente por isso que não serve aqui — se o navegador não chama, não há o que contar, e a Etapa 6 é registro de cliques. O 301 também é difícil de desfazer: um link publicado com destino errado fica cacheado no navegador de quem clicou, fora do alcance do servidor. O header `Cache-Control: no-store` reforça a mesma intenção para proxies no meio do caminho.
+
+**Cache guarda uma projeção, não a entidade.** O que vai para o Redis é um `LinkTarget` — só `originalUrl` e `expiresAt`. A entidade `Link` carrega id, data de criação e tudo que as próximas etapas vão acrescentar; guardar isso no caminho quente seria pagar memória e tráfego de rede por campo que o redirecionamento nunca lê.
+
+**A expiração é checada na leitura, fora do cache.** Como o `expiresAt` viaja junto no valor cacheado, um link vencido é recusado mesmo que a cópia no Redis continue viva por mais 59 minutos. Se o cache guardasse apenas a URL, a expiração passaria a depender do TTL do Redis — ou seja, o link continuaria funcionando por até uma hora depois de vencer. O TTL do cache existe para controlar memória, não para decidir regra de negócio.
+
+**Código inexistente não vai para o cache.** Cachear a ausência protegeria o PostgreSQL de uma varredura de códigos aleatórios, mas abriria a possibilidade de um código ficar marcado como inexistente e ser criado logo depois. Com o volume deste projeto, proteger a correção vale mais; o freio contra varredura é o rate limiting da Etapa 5.
+
+**A busca cacheada mora numa classe separada do serviço.** O `@Cacheable` só funciona quando a chamada atravessa o proxy que o Spring cria em volta do bean. Se o método estivesse no próprio `LinkService` e fosse chamado de outro método dele, seria um `this.findTarget(...)` direto — sem proxy, sem cache, e sem nenhum erro avisando. Essa armadilha se chama auto-invocação e vale igual para `@Transactional` e `@Async`.
+
+**Chaves e valores legíveis no Redis.** O padrão do Spring é serialização nativa do Java: gera bytes ilegíveis, exige implementar `Serializable` e quebra quando a classe muda de forma. Aqui a chave é texto (`encurtador:links::abc1234`) e o valor é JSON, o que permite inspecionar o cache com `redis-cli GET` durante o desenvolvimento.
+
+**Timeout curto no Redis.** O padrão é esperar indefinidamente. Se o Redis travar, o redirecionamento — o caminho mais quente da aplicação — trava junto. Dois segundos e falha.
+
+**O mapeamento `/{code}` tem expressão regular.** Sem ela, `/{code}` capturaria qualquer caminho de um segmento: `/favicon.ico`, `/robots.txt`, tudo viraria consulta ao cache e ao banco.
 
 ## Autor
 
