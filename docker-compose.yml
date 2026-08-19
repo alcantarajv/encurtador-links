@@ -1,0 +1,35 @@
+# Banco de dados local do projeto.
+#
+# Sobe com:   docker compose up -d
+# Derruba:    docker compose down
+# Apaga tudo: docker compose down -v   (remove tambem o volume com os dados)
+#
+# Nota de versao: o campo "version:" no topo do arquivo esta obsoleto desde o
+# Docker Compose v2 e a maioria dos tutoriais ainda o mostra. Se voce colocar,
+# o Docker avisa que e ignorado.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: encurtador-postgres
+    environment:
+      # Os defaults valem so para desenvolvimento local. Em producao estes
+      # valores vem do ambiente e nunca ficam num arquivo versionado.
+      POSTGRES_DB: ${POSTGRES_DB:-encurtador}
+      POSTGRES_USER: ${POSTGRES_USER:-encurtador}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-encurtador}
+    ports:
+      - "5432:5432"
+    volumes:
+      # Volume nomeado: os dados sobrevivem a "docker compose down".
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # Sem healthcheck o container aparece como "up" antes do Postgres aceitar
+      # conexao -- a aplicacao tentaria conectar cedo demais e falharia.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-encurtador} -d ${POSTGRES_DB:-encurtador}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:

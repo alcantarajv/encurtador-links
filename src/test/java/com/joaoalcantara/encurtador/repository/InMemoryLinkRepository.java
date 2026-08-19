@@ -3,18 +3,19 @@ package com.joaoalcantara.encurtador.repository;
 import com.joaoalcantara.encurtador.domain.Link;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import org.springframework.stereotype.Repository;
 
 /**
- * Armazenamento temporario em memoria, valido ate a Etapa 3.
+ * Implementacao de LinkRepository em memoria, usada apenas nos testes.
  *
- * ConcurrentHashMap e nao HashMap porque o Tomcat atende cada requisicao numa
- * thread diferente: duas criacoes simultaneas escreveriam no mesmo mapa.
+ * Ate a Etapa 2 esta classe vivia em src/main e era o armazenamento de verdade.
+ * Com a entrada do PostgreSQL ela mudou de papel: virou um dublê de teste, e por
+ * isso mudou tambem de lugar (src/test) e perdeu o @Repository -- se
+ * continuasse anotada, o Spring teria dois candidatos a LinkRepository e nao
+ * saberia qual injetar.
  *
- * Limitacao conhecida e aceita nesta etapa: os dados somem quando a aplicacao
- * reinicia.
+ * O ganho de manter a porta LinkRepository aparece aqui: o LinkServiceTest testa
+ * a regra de negocio inteira sem banco, sem Docker e em milissegundos.
  */
-@Repository
 public class InMemoryLinkRepository implements LinkRepository {
 
     private final Map<String, Link> linksByCode = new ConcurrentHashMap<>();

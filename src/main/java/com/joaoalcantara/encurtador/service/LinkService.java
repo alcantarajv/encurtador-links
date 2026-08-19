@@ -12,6 +12,7 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Regra de negocio do encurtamento.
@@ -45,6 +46,14 @@ public class LinkService {
         this.clock = clock;
     }
 
+    /**
+     * O @Transactional envolve a checagem de colisao e a gravacao numa
+     * transacao so. Sem ele, cada chamada ao repositorio abriria a sua propria
+     * transacao -- e a partir do momento em que criar um link significar mais de
+     * uma escrita (a Etapa 6 grava estatisticas), metade da operacao poderia
+     * ser efetivada e a outra metade falhar.
+     */
+    @Transactional
     public Link create(String originalUrl, Instant expiresAt) {
         String url = validateAndNormalize(originalUrl);
         String code = generateAvailableCode();
@@ -94,8 +103,9 @@ public class LinkService {
      * "zero" -- e uma colisao silenciosa sobrescreveria o link de outra pessoa.
      *
      * Detalhe conhecido: entre o existsByCode e o save existe uma janela em que
-     * outra thread pode gravar o mesmo codigo. Em memoria isso e improvavel; na
-     * Etapa 3 quem fecha essa janela de vez e a constraint UNIQUE do banco.
+     * outra requisicao pode gravar o mesmo codigo. Quem fecha essa janela de vez
+     * nao e este laco, e sim o indice UNIQUE de "code" no banco: na pior das
+     * hipoteses o insert falha em vez de sobrescrever o link de outra pessoa.
      */
     private String generateAvailableCode() {
         for (int attempt = 1; attempt <= MAX_CODE_ATTEMPTS; attempt++) {
