@@ -20,6 +20,7 @@ Este projeto foi construído com foco nesses pontos, e não apenas no CRUD de li
 - [x] Rate limiting por IP, com políticas distintas para criação e redirecionamento
 - [x] Registro assíncrono de cliques (data/hora, referrer, user agent, hash do IP)
 - [x] Endpoint de estatísticas agregadas por link
+- [x] Empacotamento em imagem Docker e ambiente completo via Docker Compose
 - [ ] Documentação interativa da API via OpenAPI/Swagger
 - [ ] País de origem do clique _(exige base GeoIP — ver "Fora de escopo" abaixo)_
 
@@ -38,21 +39,39 @@ Este projeto foi construído com foco nesses pontos, e não apenas no CRUD de li
 
 ## Como executar localmente
 
-**Pré-requisitos:** JDK 21 e Docker Desktop. O Maven não precisa ser instalado — o projeto usa o Maven Wrapper.
+**Pré-requisitos:** Docker Desktop. Para o modo de desenvolvimento, também o JDK 21 — o Maven não precisa ser instalado, o projeto usa o Maven Wrapper.
 
-**1. Suba o banco de dados:**
+Há dois modos, e a diferença entre eles é só quem executa a aplicação.
+
+### Modo 1 — tudo em containers
+
+Um comando, nada instalado além do Docker:
 
 ```bash
-docker compose up -d
+docker compose --profile app up -d
 ```
 
-Isso levanta um PostgreSQL 17 na porta 5432 e um Redis 8 na porta 6379. Para conferir se estão saudáveis:
+Isso constrói a imagem a partir do `Dockerfile` e sobe três containers: PostgreSQL, Redis e a aplicação. O `depends_on` com `condition: service_healthy` faz a aplicação esperar o banco aceitar conexão antes de subir — sem isso o Flyway tentaria migrar contra um Postgres ainda inicializando.
+
+A primeira construção leva cerca de um minuto e meio (ela compila o projeto do zero dentro do container). As seguintes levam segundos.
+
+Para acompanhar a subida e conferir o estado:
+
+```bash
+docker compose logs -f app
+```
 
 ```bash
 docker compose ps
 ```
 
-**2. Suba a aplicação:**
+### Modo 2 — desenvolvimento
+
+Só a infraestrutura em container; a aplicação roda na IDE, com debug e recarga automática:
+
+```bash
+docker compose up -d
+```
 
 ```bash
 # Windows
@@ -62,28 +81,41 @@ docker compose ps
 ./mvnw spring-boot:run
 ```
 
-Na primeira subida o Flyway cria a tabela `links` e registra a migration aplicada. A aplicação sobe em `http://localhost:8080`.
+Sem o `--profile app`, o serviço da aplicação não sobe — ele está marcado com um perfil no `docker-compose.yml` justamente para não brigar pela porta 8080 com a instância da IDE.
 
-Para derrubar o banco (mantendo os dados) ou apagar tudo:
+### Conferindo e derrubando
 
-```bash
-docker compose down
-docker compose down -v
-```
-
-Para verificar se está no ar:
+Em qualquer um dos modos, a aplicação responde em `http://localhost:8080`:
 
 ```bash
 curl http://localhost:8080/actuator/health
 ```
 
-Resposta esperada:
-
 ```json
 {"status":"UP","groups":["liveness","readiness"]}
 ```
 
-Para rodar os testes:
+```bash
+docker compose --profile app down
+```
+
+```bash
+docker compose --profile app down -v
+```
+
+O primeiro derruba os containers preservando os dados; o segundo apaga também os volumes.
+
+### Configuração sensível
+
+O `docker-compose.yml` tem defaults para tudo, então o projeto sobe recém-clonado sem nenhum ajuste. Para trocar credenciais, porta ou o sal do hash de IP, copie o modelo:
+
+```bash
+cp .env.example .env
+```
+
+O `.env` é lido automaticamente pelo Compose e está no `.gitignore`. O `.env.example`, versionado, documenta quais variáveis existem sem que nenhum valor real entre no repositório.
+
+### Testes
 
 ```bash
 .\mvnw test
@@ -275,8 +307,12 @@ O `/actuator/**` fica de fora do limitador de propósito: o health check é cham
 | `shortener.rate-limit.stats.limit` | `RATE_LIMIT_STATS` | `30` | consultas de estatística por minuto, por IP |
 | `shortener.click-tracking.enabled` | `CLICK_TRACKING_ENABLED` | `true` | liga/desliga o registro de cliques |
 | `shortener.click-tracking.ip-salt` | `CLICK_IP_SALT` | valor de desenvolvimento | segredo usado no hash do IP — **trocar em produção** |
+| — | `APP_PORT` | `8080` | porta publicada no host pelo Compose (só afeta o container) |
+| `spring.profiles.active` | `SPRING_PROFILES_ACTIVE` | nenhum | no container vale `docker`, que reduz o nível de log e esconde os detalhes do `/actuator/health` |
 
 Os valores padrão existem para desenvolvimento local e batem com o que o `docker-compose.yml` cria. Em produção todos vêm do ambiente — nenhuma credencial fica em arquivo versionado.
+
+As variáveis podem ser definidas no `.env` da raiz, que o Compose lê sozinho — o `.env.example` serve de modelo e é o único dos dois versionado.
 
 ## Estrutura do projeto
 
@@ -295,11 +331,15 @@ encurtador-links/
 │   │   └── service/                 # Regra de negócio
 │   ├── main/resources/
 │   │   ├── db/migration/            # Migrations do Flyway (V1__..., V2__...)
-│   │   └── application.properties
+│   │   ├── application.properties
+│   │   └── application-docker.properties   # sobrepõe o base quando roda em container
 │   └── test/java/
 │       ├── integration/             # Testes com PostgreSQL e Redis reais (Testcontainers)
 │       └── ...                      # Demais testes espelham a estrutura de main
-├── docker-compose.yml               # PostgreSQL e Redis para desenvolvimento local
+├── Dockerfile                       # Imagem da aplicação, em dois estágios
+├── .dockerignore                    # O que não é enviado ao daemon do Docker no build
+├── docker-compose.yml               # PostgreSQL, Redis e a aplicação (esta, sob perfil)
+├── .env.example                     # Modelo das variáveis lidas pelo Compose
 ├── mvnw / mvnw.cmd                  # Scripts do Maven Wrapper (Linux/macOS e Windows)
 └── pom.xml                          # Dependências e configuração de build
 ```
@@ -398,6 +438,29 @@ encurtador-links/
 **Testes de integração sem `@Transactional`.** A anotação faria cada teste rodar dentro de uma transação revertida no fim, e as consultas nativas poderiam não enxergar dados ainda não gravados. Aqui os dados são gravados de verdade e a limpeza é explícita, no `@BeforeEach`.
 
 **O bug que essa etapa encontrou.** O `date_trunc('day', clicked_at)` sobre uma coluna `timestamptz` converte o valor para o fuso da **sessão** do banco antes de truncar — e o driver JDBC define esse fuso a partir do relógio da JVM. Numa máquina em UTC−3, um clique às 23:30Z e outro às 00:30Z do dia seguinte viravam 20:30 e 21:30 do *mesmo* dia local, e a série diária juntava os dois no dia errado. A correção foi `date_trunc('day', clicked_at AT TIME ZONE 'UTC')`. Nenhum teste de unidade poderia ter encontrado isso: o dublê em memória agrupa em Java, sempre em UTC. É a justificativa inteira da etapa em um caso.
+
+**Imagem em dois estágios.** O primeiro estágio precisa do JDK completo, do Maven e de todo o código-fonte; o segundo só precisa da JRE e do resultado. Como a imagem final parte do zero e copia apenas o que interessa do primeiro, nada disso é publicado — nem fonte, nem Maven, nem o cache do `.m2`. Medido neste projeto: a mesma aplicação num estágio único dá **1,01 GB** em disco (389 MB para trafegar no registro); em dois estágios, **412 MB** em disco e 134 MB para trafegar. Dentro do container o conteúdo são 158 MB de JRE, 64 MB de dependências e 64 KB de código deste projeto.
+
+**O jar quebrado em duas camadas, e não copiado inteiro.** O "jar gordo" do Spring Boot tem 66 MB, e 64 MB disso são bibliotecas de terceiros que só mudam quando o `pom.xml` muda. Copiado inteiro, cada alteração de uma linha de Java geraria uma camada nova de 66 MB para reconstruir, armazenar e enviar ao registro. O comando `java -Djarmode=tools ... extract` separa o conteúdo em `lib/` (66,5 MB, muda raramente) e `app.jar` (74 KB, muda sempre), copiados em duas instruções nessa ordem. Medido neste projeto: construção do zero em 1min35s, reconstrução depois de mexer numa classe em **7 segundos** — com o `COPY lib/` marcado `CACHED`.
+
+> ⚠️ Praticamente todo tutorial de Dockerfile para Spring Boot usa `java -Djarmode=layertools -jar app.jar extract`. Esse modo foi substituído no Boot 3.3 e **removido** no Boot 4 — ele responde `Unsupported jarmode 'layertools'`.
+
+**A aplicação sob um perfil do Compose.** Sem isso, `docker compose up -d` passaria a construir e subir também a aplicação, atrapalhando o desenvolvimento na IDE e brigando pela porta 8080. Com `profiles: ["app"]`, o comando de sempre continua levantando só a infraestrutura, e `docker compose --profile app up -d` levanta o conjunto completo.
+
+**`depends_on` com `condition: service_healthy`.** Um `depends_on` simples só garante que o container foi criado, não que o banco aceita conexão. Como o Flyway roda na subida da aplicação, sem a condição de saúde ele tentaria migrar contra um Postgres ainda inicializando.
+
+**Usuário sem privilégios e `ENTRYPOINT` em forma de lista.** Container roda como root por padrão; a aplicação não precisa de privilégio nenhum, não escreve em disco e usa a porta 8080. A forma de lista (`exec`) faz a JVM ser o processo 1 — na forma de shell, o `/bin/sh` seria o PID 1 e o `SIGTERM` do `docker stop` nunca chegaria na JVM, que morreria no `SIGKILL` dez segundos depois. Nos logs dá para conferir os dois: `INFO 1 ---` e o `Commencing graceful shutdown` ao parar.
+
+**`-XX:MaxRAMPercentage=75.0`.** A JVM enxerga os limites do cgroup desde o Java 10, mas por padrão reserva no máximo 1/4 da memória do container para o heap. Num limite de 512 MB, isso são 128 MB de heap com 384 MB ociosos enquanto a aplicação sofre com coleta de lixo.
+
+> ⚠️ Muitos Dockerfiles ainda trazem `-Djava.security.egd=file:/dev/./urandom`. Era um contorno para lentidão de entropia em Linux antigo, desnecessário desde o Java 8u162. Não está aqui.
+
+**Perfil `docker` do Spring, e não um segundo `application.properties`.** O arquivo base liga log de DEBUG e imprime cada consulta gerada pelo Hibernate — ótimo para aprender, insuportável num serviço que recebe tráfego. O `application-docker.properties` é lido depois do base e sobrescreve só essas chaves; tudo o mais continua vindo de um lugar só. Ele também troca `management.endpoint.health.show-details` para `never`: sem autenticação configurada, o `/actuator/health` é público, e com detalhes ele revela o banco em uso, o espaço livre em disco e o estado do Redis.
+
+**Os testes não rodam dentro da imagem.** Desde a Etapa 7 os testes de integração sobem containers via Testcontainers, o que exige acesso a um daemon do Docker — que não existe dentro do container de build. Rodar a suíte é responsabilidade da máquina do desenvolvedor e da integração contínua (Etapa 9), onde o daemon está disponível.
+
+**`.dockerignore` antes de tudo.** Sem ele, o `docker build` empacota a pasta inteira e envia ao daemon — incluindo o `target/` com o jar de 66 MB e o `.git` com o histórico completo — só para descartar depois. Vale também como proteção: arquivo que não entra no contexto não tem como acabar dentro da imagem por descuido, e é por isso que o `.env` está listado lá.
+
 ## Autor
 
 **João Vitor Alcântara Corrêa**
