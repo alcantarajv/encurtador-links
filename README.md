@@ -668,7 +668,7 @@ O `.env` é lido automaticamente pelo Compose e está no `.gitignore`. O `.env.e
 ## Testes
 
 ```bash
-.\mvnw test
+./mvnw test
 ```
 
 **Não é preciso subir nada antes.** Os testes de integração levantam PostgreSQL e Redis em containers descartáveis via Testcontainers — só é necessário ter o Docker rodando. A suíte inteira leva cerca de 20 segundos.
@@ -736,17 +736,7 @@ Falha barulhenta na hora do deploy custa minutos. Falha silenciosa custa o tempo
 
 ## Stack
 
-| Camada | Tecnologia |
-|---|---|
-| Linguagem | Java 21 (LTS) |
-| Framework | Spring Boot 4 |
-| Banco de dados | PostgreSQL |
-| Cache | Redis |
-| Build | Maven |
-| Testes | JUnit 5, AssertJ, Testcontainers |
-| Containerização | Docker / Docker Compose |
-| CI | GitHub Actions |
-| Deploy | Render (aplicação e cache) + Neon (PostgreSQL) |
+Java 21 · Spring Boot 4 · PostgreSQL · Redis · Flyway · JPA/Hibernate · JUnit 5 · AssertJ · Testcontainers · Docker / Docker Compose · GitHub Actions · Render + Neon
 
 ---
 
