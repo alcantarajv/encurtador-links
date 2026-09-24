@@ -24,6 +24,9 @@ O serviço roda no plano gratuito do Render e hiberna após 15 minutos sem tráf
 ## Sumário
 
 - [No ar](#no-ar)
+- [O problema central](#o-problema-central)
+  - [O que o projeto faz em vez disso](#o-que-o-projeto-faz-em-vez-disso)
+  - [O erro que parecia inofensivo](#o-erro-que-parecia-inofensivo)
 - [Funcionalidades](#funcionalidades)
 - [Decisões técnicas](#decisões-técnicas)
   - [Escolhas de stack](#escolhas-de-stack)
@@ -46,6 +49,51 @@ O serviço roda no plano gratuito do Render e hiberna após 15 minutos sem tráf
 - [Integração contínua](#integração-contínua)
 - [Deploy](#deploy)
 - [Stack](#stack)
+
+---
+
+## O problema central
+
+A tentação, num encurtador, é escrever o redirecionamento assim:
+
+```java
+@GetMapping("/{code}")
+public ResponseEntity<Void> redirect(@PathVariable String code) {
+    Link link = linkRepository.findByCode(code).orElseThrow();
+    clickRepository.save(new Click(link, Instant.now()));
+    return ResponseEntity.status(HttpStatus.MOVED_PERMANENTLY)
+            .location(URI.create(link.getOriginalUrl()))
+            .build();
+}
+```
+
+Cinco linhas, passa em qualquer teste, e a página abre. Mas este é o endpoint mais chamado da aplicação — cada link publicado gera um acesso por visitante — e as cinco linhas têm três defeitos que não aparecem com um usuário só.
+
+**O `301` desliga a contagem.** O navegador memoriza o destino e nas próximas vezes sequer chama o serviço. É mais rápido, e é exatamente por isso que não serve: sem chamada, não há clique para registrar. O `301` também é difícil de desfazer — um link publicado com destino errado fica cacheado no navegador de quem clicou, fora do alcance do servidor.
+
+**A gravação do clique entra na conta do visitante.** O `INSERT` acontece antes da resposta, então cada redirecionamento paga uma escrita no banco antes de o navegador saber para onde ir. Quem espera é o visitante, por um trabalho que é do serviço.
+
+**Toda resposta depende do banco estar de pé.** Uma consulta por clique, sempre — inclusive para o link que acabou de ser acessado mil vezes.
+
+### O que o projeto faz em vez disso
+
+O destino vem do Redis, e o que é guardado lá é uma **projeção** — só a URL de destino e a data de expiração —, não a entidade inteira: o caminho quente não lê os outros campos e não deveria pagar memória e tráfego de rede por eles.
+
+A expiração viaja junto na projeção e é conferida na leitura. Se dependesse do TTL do Redis, um link vencido continuaria funcionando até a cópia cacheada morrer. O TTL existe para controlar memória, não para decidir regra de negócio.
+
+O clique é gravado fora da thread da requisição, e os dados são copiados do `HttpServletRequest` **antes** de atravessar a fronteira entre as threads. O motivo é concreto: assim que a resposta é enviada, o Tomcat devolve a requisição ao pool e a reaproveita — ler um cabeçalho do outro lado leria o dado de **outro visitante**. É para isso que existe o record `ClickEvent`.
+
+E quando a infraestrutura falha, o serviço escolhe continuar respondendo: erro no Redis não derruba a requisição, e o limitador de abuso deixa passar em vez de bloquear todo mundo. Para um encurtador, ficar no ar vale mais do que aplicar o limite com rigor — num fluxo de login ou de pagamento a escolha seria a oposta.
+
+### O erro que parecia inofensivo
+
+O método que resolve o código tinha `@Transactional(readOnly = true)`. Parece cuidado de quem sabe o que está fazendo.
+
+A transação abre **antes** de o cache ser consultado. Toda resposta — inclusive as que o Redis já tinha na mão — pegava uma conexão do PostgreSQL. Com o banco fora do ar, um link cacheado respondia `500` depois de esperar o tempo limite de conexão, sem nunca ter precisado do banco para nada.
+
+A correção foi tirar a anotação. É o tipo de defeito que nenhum teste de unidade encontra e nenhuma revisão de código estranha, porque a linha errada é aquela que parece a mais responsável do arquivo.
+
+O raciocínio por trás de cada uma dessas escolhas está em [Decisões técnicas](#decisões-técnicas).
 
 ---
 
